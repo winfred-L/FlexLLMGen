@@ -11,7 +11,7 @@ import math
 import os
 import time
 
-from flexllmgen.flex_opt import (Policy, OptLM, ExecutionEnv, CompressionConfig,
+from flexllmgen.main import (Policy, OptLM, ExecutionEnv, CompressionConfig,
         str2bool)
 from helm.benchmark.presentation.run_entry import RunEntry
 from helm.benchmark.run import run_entries_to_run_specs

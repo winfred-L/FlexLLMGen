@@ -12,7 +12,7 @@ from transformers import AutoTokenizer
 
 from flexllmgen.compression import CompressionConfig
 from flexllmgen.dist_utils import initialize_distributed
-from flexllmgen.flex_opt import (Policy, InputEmbed, OutputEmbed, SelfAttention,
+from flexllmgen.main import (Policy, InputEmbed, OutputEmbed, SelfAttention,
                               MLP, TransformerLayer, OptLM, get_filename,
                               add_parser_arguments, get_test_inputs,
                               DUMMY_WEIGHT)

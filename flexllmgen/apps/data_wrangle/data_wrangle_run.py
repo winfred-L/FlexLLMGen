@@ -16,7 +16,7 @@ import flexllmgen.apps.data_wrangle.utils.data_utils as data_utils
 import flexllmgen.apps.data_wrangle.utils.prompt_utils as prompt_utils
 from flexllmgen.apps.data_wrangle.utils import constants
 from flexllmgen.apps.data_wrangle.utils.utils import compute_metrics, setup_logger
-from flexllmgen.flex_opt import (Policy, OptLM, ExecutionEnv, CompressionConfig, str2bool)
+from flexllmgen.main import (Policy, OptLM, ExecutionEnv, CompressionConfig, str2bool)
 
 
 logger = logging.getLogger(__name__)

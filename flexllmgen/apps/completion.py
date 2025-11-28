@@ -1,7 +1,7 @@
 """Complete sentences with FlexLLMGen and OPT models."""
 import argparse
 
-from flexllmgen.flex_opt import (Policy, OptLM, ExecutionEnv, CompressionConfig,
+from flexllmgen.main import (Policy, OptLM, ExecutionEnv, CompressionConfig,
         str2bool)
 from transformers import AutoTokenizer
 
