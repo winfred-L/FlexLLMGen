@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from experiments.run_exp import ExpConfig, cases, get_filename
-from flexllmgen.opt_config import get_opt_config
+from flexllmgen.models.opt_config import get_opt_config
 from flexllmgen.utils import GB, T
 
 class CostModel(nn.Module):

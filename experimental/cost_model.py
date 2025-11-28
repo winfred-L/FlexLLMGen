@@ -36,7 +36,7 @@ import numpy as np
 import pulp
 
 from flexllmgen.compression import CompressionConfig
-from flexllmgen.opt_config import get_opt_config
+from flexllmgen.models.opt_config import get_opt_config
 from flexllmgen.flex_opt import Policy
 from flexllmgen.utils import GB, T
 

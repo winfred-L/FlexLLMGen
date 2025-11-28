@@ -25,7 +25,7 @@ import torch
 from flexllmgen.timer import timers
 from flexllmgen.utils import (GB, project_decode_latency,
     write_benchmark_log)
-from flexllmgen.opt_config import (get_opt_config,
+from flexllmgen.models.opt_config import (get_opt_config,
     disable_torch_init, disable_hf_opt_init)
 
 
