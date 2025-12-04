@@ -38,7 +38,7 @@ class Qwen2_5_VLTextInputEmbed(InputEmbed):
         weight_home.store(weights)
 
     def load_weight(self, weight_home, weight_read_buf, k):
-        w_token = weight_home.val
+        w_token = weight_home.val[0] # weight_home.val赋值单变量需要解包
         if k == 0:
             dst = self.weight_load_dst
             weight_read_buf.store((w_token.smart_copy(dst)))
@@ -154,7 +154,7 @@ class Qwen2_5_VLAttention(SelfAttention):
                 w_out.smart_copy(dst1), w_ln.smart_copy(dst2)))
             
     def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,
-                cache_write_buf, i, k):
+                cache_write_buf, i, k, position_embeddings):
         n_head = self.config.num_attention_heads
         n_kv_head = self.config.num_key_value_heads
 
@@ -173,7 +173,8 @@ class Qwen2_5_VLAttention(SelfAttention):
             mask, donate[1] = attention_mask.val.smart_copy(self.compute)
             h, new_k_cache, new_v_cache = self.compute.gqa(h, mask, w_q, b_q,
                 w_k, b_k, w_v, b_v, w_out, w_ln, n_head, n_kv_head, donate,
-                self.policy.compress_cache, self.policy.comp_cache_config, self.config.rms_norm_eps)
+                self.policy.compress_cache, self.policy.comp_cache_config,
+                self.config.rms_norm_eps, position_embeddings, self.config.rope_scaling_mrope_section)
             cache_write_buf.store((new_k_cache, new_v_cache))
         else:  # decoding
             mask, donate[1] = attention_mask.val.smart_copy(self.attention_compute)
@@ -181,7 +182,8 @@ class Qwen2_5_VLAttention(SelfAttention):
             h, new_k_cache, new_v_cache = self.compute.gqa_gen(h, mask, w_q,
                 b_q, w_k, b_k, w_v, b_v, w_out, w_ln, n_head, n_kv_head,
                 k_cache, v_cache, donate, self.policy.attn_sparsity,
-                self.policy.compress_cache, self.policy.comp_cache_config, self.config.rms_norm_eps)
+                self.policy.compress_cache, self.policy.comp_cache_config,
+                self.config.rms_norm_eps, position_embeddings, self.config.rope_scaling_mrope_section)
             cache_write_buf.store((new_k_cache, new_v_cache))
 
         hidden.val = h
@@ -230,7 +232,16 @@ class Qwen2MLP(MLP):
 
 
 class Qwen2_5_VLDecoderLayer(TransformerLayer):
-    pass # no change
+    def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,
+                cache_write_buf, i, k, position_embeddings):
+        if k == self.policy.num_gpu_batches - 1:
+            read_buf1, read_buf2 = weight_read_buf.pop()
+        else:
+            read_buf1, read_buf2 = weight_read_buf.val
+
+        self.attention.forward(hidden, cache_read_buf, read_buf1, attention_mask,
+                               cache_write_buf, i, k, position_embeddings)
+        self.mlp.forward(hidden, None, read_buf2, attention_mask, None, i, k)
 
 
 

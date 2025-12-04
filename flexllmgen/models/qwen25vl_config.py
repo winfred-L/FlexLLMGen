@@ -15,6 +15,7 @@ class Qwen25VLConfig:
     pad_token_id: int = 151643
     hidden_act: str = "silu"
     rms_norm_eps: float = 1e-06
+    rope_scaling_mrope_section: list[int] = dataclasses.field(default_factory=lambda: [16, 24, 24])
     
     # --- Vision Config ---
     vision_hidden_size: int = 1280

@@ -29,7 +29,7 @@ from flexllmgen.models.base_model import BaseLM
 
 
 from transformers import AutoConfig
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel, Qwen2_5_VLRotaryEmbedding
 from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
 
 # modified from Qwen2_5_VLModel
@@ -288,22 +288,32 @@ class Qwen25VLLM(BaseLM):
     由于只关注模型decoding阶段指标（TPOT等），encoder部分的实现
     并不影响最终性能的测量。
     '''
-    position_ids = None
+    attention_layer_ids = None
+    rotary_emb: Qwen2_5_VLRotaryEmbedding = None
+    # position_ids = None
     rope_deltas = None
+    position_embeddings = None
 
     def get_model_config(self) -> Qwen25VLConfig:
         return get_qwen25vl_config(self.name)
 
     def init_model_layers(self) -> List:
         layers = []
+        attention_layer_ids = []
         layers.append(Qwen2_5_VLTextInputEmbed(self.config, self.env, self.policy))
+        cnt = 1
         for i in range(self.config.num_hidden_layers):
             if self.policy.sep_layer:
                 layers.append(Qwen2_5_VLAttention(self.config, self.env, self.policy, i))
+                attention_layer_ids.append(cnt)
                 layers.append(Qwen2MLP(self.config, self.env, self.policy, i))
+                cnt += 2
             else:
                 layers.append(Qwen2_5_VLDecoderLayer(self.config, self.env, self.policy, i))
+                attention_layer_ids.append(cnt)
+                cnt += 1
         layers.append(Qwen2_5_VLOutputHead(self.config, self.env, self.policy))
+        self.attention_layer_ids = attention_layer_ids
         return layers
 
     def get_task(self, inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) -> VisionTask:
@@ -321,6 +331,27 @@ class Qwen25VLLM(BaseLM):
             video_grid_thw=inputs.video_grid_thw,
             second_per_grid_ts=inputs.second_per_grid_ts,
         )
+
+    def compute_layer(self, i, j, k):
+        # 为attention层计算额外传入position_embeddings
+        if j in self.attention_layer_ids:
+            self.layers[j].forward(
+                self.hidden[i][j][k], 
+                self.cache_read_buf[j][k],
+                self.weight_read_buf[j], 
+                self.attention_mask[k],
+                self.cache_write_buf[j][k], 
+                i, k, self.position_embeddings
+            )
+        else:
+            self.layers[j].forward(
+                self.hidden[i][j][k], 
+                self.cache_read_buf[j][k],
+                self.weight_read_buf[j], 
+                self.attention_mask[k],
+                self.cache_write_buf[j][k], 
+                i, k
+            )
     
     def encoder(self, k):
         '''
@@ -330,7 +361,7 @@ class Qwen25VLLM(BaseLM):
         assert k == 0, "Only support single GPU batch for encoder."
 
         # load model config
-        if self.config.name != "qwen25vl-7b":
+        if self.config.name == "qwen25vl-7b":
             model_path = '/data/lyc/models/Qwen2.5-VL-7B-Instruct'
         else:
             raise ValueError('Unimplemented.')
@@ -342,9 +373,10 @@ class Qwen25VLLM(BaseLM):
         # load embedding layer and visual encoder
         text_embed_layer = torch.nn.Embedding(qwen_config.vocab_size, qwen_config.hidden_size, self.config.pad_token_id)
         visual_encoder = Qwen2_5_VisionTransformerPretrainedModel._from_config(qwen_config.vision_config)
+        self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=qwen_config)
 
         # get inputs
-        input_ids = torch.Tensor(self.task.input_ids)
+        input_ids = torch.tensor(self.task.input_ids, dtype=torch.int64)
         attention_mask = self.task.attention_mask
         pixel_values_videos = self.task.pixel_values_videos
         image_grid_thw = None
@@ -363,9 +395,10 @@ class Qwen25VLLM(BaseLM):
         inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
 
         # set hidden
-        self.hidden[0][0][k].val = TorchTensor.create_from_torch(inputs_embeds, self)
+        hidden_states = inputs_embeds.to(self.env.gpu.dev)
+        self.hidden[0][0][k].val = TorchTensor.create_from_torch(hidden_states, self.env.gpu)
         
-        # get rope index
+        # set position embeddings
         position_ids, rope_deltas = get_rope_index(
             config=qwen_config, 
             input_ids=input_ids,
@@ -374,13 +407,31 @@ class Qwen25VLLM(BaseLM):
             second_per_grid_ts=second_per_grid_ts,
             attention_mask=attention_mask
         )
-        self.position_ids = position_ids
+        position_ids = position_ids
         self.rope_deltas = rope_deltas
+        self.position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
         
         # clear encoder weights
         del text_embed_layer
         del visual_encoder
     
+    def set_position_embeddings(self, inputs_embeds, cur_pos_id):
+        # 获取当前生成的 token 数量，通常在解码阶段 seq_length 为 1
+        batch_size, seq_length, _ = inputs_embeds.shape
+        # 创建基础的相对位置索引 (0, 1, 2...)
+        position_ids = torch.arange(seq_length, device=inputs_embeds.device)
+        # 扩展维度以适配 Qwen2-VL 的 3D RoPE 结构
+        # 形状变为 (3, batch_size, seq_length)，3 代表 (Time, Height, Width) 三个维度
+        position_ids = position_ids.view(1, 1, -1).expand(3, batch_size, -1)
+        # 计算绝对位置
+        delta = (cur_pos_id + self.rope_deltas).to(inputs_embeds.device)
+        # 广播 Delta 以匹配 batch 维度
+        delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=1)
+        # 最终位置 = 基础位置 + (全局计数 + 偏移量)
+        position_ids = position_ids + delta.to(position_ids.device)
+        # 使用 RoPE 计算位置嵌入
+        self.position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+
 
     def generation_loop_normal(self):
         for i in range(self.execute_gen_len):
@@ -394,7 +445,7 @@ class Qwen25VLLM(BaseLM):
                 for k in range(self.num_gpu_batches):
                     self.load_cache(i, j, k, overlap=False)
                     self.load_hidden(i, j, k)
-                    if j == 0 and i == 0: # do visual encoder
+                    if j == 0 and i == 0: # replace the first InputEmbed layer with visual encoder
                         self.encoder(k)
                     else:
                         self.compute_layer(i, j, k)
@@ -402,9 +453,14 @@ class Qwen25VLLM(BaseLM):
                     self.store_hidden(i, j, k)
                     self.store_cache(i, j, k, overlap=False)
                     
-                    # get position embeddings to be shared across the decoder layers
-                    if j == 0:
-                        self.rotary_emb()
+                    # set position embeddings to be shared across all attention layers
+                    # do after input embedding layer, before all attention layers
+                    # Note: when (j == 0 and i == 0), set position embeddings is done in encoder()
+                    if j == 0 and i != 0:
+                        inputs_embeds = self.hidden[i][j][k].val.data
+                        cur_pos_id = self.task.prompt_len + i
+                        self.set_position_embeddings(inputs_embeds, cur_pos_id)
+            
             timers("generate").stop()
 
     def generation_loop_debug_normal(self):
