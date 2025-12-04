@@ -21,7 +21,7 @@ T = 1e12
 @dataclasses.dataclass(frozen=True)
 class Task:
     """A generation task."""
-    inputs: Union[np.array, List[List[int]]]
+    input_ids: Union[np.array, List[List[int]]]
     prompt_len: int
     gen_len: int
     cut_gen_len: Optional[int]
@@ -29,6 +29,16 @@ class Task:
     do_sample: bool
     temperature: float
     stop: Optional[int]
+
+
+@dataclasses.dataclass(frozen=True)
+class VisionTask(Task):
+    attention_mask: Optional[torch.Tensor] = None
+    # pixel_values: Optional[torch.Tensor] = None     # for image
+    pixel_values_videos: Optional[torch.Tensor] = None
+    # image_grid_thw: Optional[torch.Tensor] = None   # for image
+    video_grid_thw: Optional[torch.Tensor] = None
+    second_per_grid_ts: Optional[torch.Tensor] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -63,21 +73,37 @@ class BenchmarkResult:
     total_throughput: float
 
 
+# 因为 numpy 不支持 bfloat16，所以这里映射到 uint16
 np_dtype_to_torch_dtype = {
-    np.float16: torch.float16, np.float32: torch.float32, np.uint8: torch.uint8,
-    np.int8: torch.int8, np.int32: torch.int32, np.int64: torch.int64,
+    np.uint16: torch.bfloat16,
+    np.float16: torch.float16,
+    np.float32: torch.float32,
+    np.uint8: torch.uint8,
+    np.int8: torch.int8,
+    np.int32: torch.int32,
+    np.int64: torch.int64,
     bool: torch.bool,
 }
 
 torch_dtype_to_np_dtype = {
-    torch.float16: np.float16, torch.float32: np.float32,
-    torch.uint8: np.uint8, torch.int8: np.int8, torch.int32: np.int32,
-    torch.int64: np.int64, torch.bool: bool,
+    torch.bfloat16: np.uint16,
+    torch.float16: np.float16,
+    torch.float32: np.float32,
+    torch.uint8: np.uint8,
+    torch.int8: np.int8,
+    torch.int32: np.int32,
+    torch.int64: np.int64,
+    torch.bool: bool,
 }
 
 torch_dtype_to_num_bytes = {
-    torch.float16: 2, torch.float32: 4,
-    torch.int8: 1, torch.uint8: 1, torch.int32: 4, torch.int64: 8,
+    torch.bfloat16: 2,
+    torch.float16: 2,
+    torch.float32: 4,
+    torch.int8: 1,
+    torch.uint8: 1,
+    torch.int32: 4,
+    torch.int64: 8,
     torch.bool: 1,
 }
 

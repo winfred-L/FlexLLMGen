@@ -31,8 +31,8 @@ class Policy:
     w_cpu_percent: float
     cache_gpu_percent: float
     cache_cpu_percent: float
-    act_gpu_percent: float
-    act_cpu_percent: float
+    act_gpu_percent: float # must be 100 or 0
+    act_cpu_percent: float # must be 100 or 0
 
     # Whether to overlap the I/O and compute
     overlap: bool

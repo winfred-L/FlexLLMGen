@@ -7,15 +7,17 @@ name = "flexllmgen"
 version = "0.1.7"
 description = "Running large language models like OPT-175B/GPT-3 on a single GPU. Focusing on high-throughput large-batch generation."
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
-    "torch>=1.12", "transformers>=4.24",
+    "torch>=2.9", "transformers>=4.57.3",
     "numpy", "tqdm", "pulp", "attrs",
+    "torchvision", "qwen_vl_utils"
 ]
+# pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 
 [project.urls]
 "Homepage" = "https://github.com/FMInference/FlexLLMGen"

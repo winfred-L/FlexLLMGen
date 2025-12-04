@@ -196,7 +196,7 @@ class TorchCompressedDevice:
                              shape[group_dim+1:])
             indices = [slice(0, x) for x in flatten_shape]
             indices[group_dim] = slice(0, flatten_shape[group_dim] - unpad_len)
-            data = data.view(flatten_shape)[indices].contiguous()
+            data = data.view(flatten_shape)[tuple(indices)].contiguous()
 
         return data.view(tensor.shape)
 

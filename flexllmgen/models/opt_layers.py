@@ -19,26 +19,13 @@ from flexllmgen.utils import (Task, ExecutionEnv, GB, T, ValueHolder,
     read_benchmark_log)
 
 from flexllmgen.policy import Policy, init_weight_list, DUMMY_WEIGHT
+from flexllmgen.models.base_layer import BaseLayer
 
-
-class InputEmbed:
-    def __init__(self, config, env, policy):
-        self.config = config
-        self.env = env
-        self.policy = policy
-        self.compute = self.env.gpu
-        self.weight_load_dst = (self.compute.compressed_device if policy.compress_weight
-            else self.compute)
-
-        self.task = None
-
-    def set_task(self, task):
-        self.task = task
-
+class InputEmbed(BaseLayer):
     def init_weight(self, weight_home, path):
         v, h, s, dtype = (self.config.vocab_size, self.config.input_dim,
             self.config.max_seq_len, self.config.dtype)
-        path = os.path.join(path, "")
+        path = os.path.join(path, "") # 确保路径末尾含有/
         weight_specs = [
             # w_token
             ((v, h), dtype, path + "decoder.embed_tokens.weight"),
@@ -55,22 +42,13 @@ class InputEmbed:
             dst = self.weight_load_dst
             weight_read_buf.store((w_token.smart_copy(dst), w_pos.smart_copy(dst)))
 
-    def init_cache_one_gpu_batch(self, cache_home):
-        pass  # do nothing
-
-    def load_cache(self, cache_home, cache_read_buf, i):
-        pass  # do nothing
-
-    def store_cache(self, cache_home, cache_write_buf, i):
-        pass  # do nothing
-
     def input_act_shape_and_dtype(self, batch_size, seq_len):
         return (batch_size, seq_len), np.int64
 
     def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,
                 cache_write_buf, i, k):
         # Compute input embedding
-        donate = [False] * 4
+        donate = [False] * 4 # 用于指示输入数据的内存是否可以使用后释放
         h, donate[0] = hidden.val, True
         mask, donate[1] = attention_mask.val.smart_copy(self.compute)
 
@@ -82,23 +60,12 @@ class InputEmbed:
 
         h = self.compute.opt_input_embed(h, mask,
             w_token, w_pos, self.config.pad_token_id, donate)
-        hidden.val = h
+        hidden.val = h # torch.Size([1, 32, 2048])
+
+        # import pdb; pdb.set_trace() 
 
 
-class OutputEmbed:
-    def __init__(self, config, env, policy):
-        self.config = config
-        self.env = env
-        self.policy = policy
-        self.compute = self.env.gpu
-        self.weight_load_dst = (self.compute.compressed_device if policy.compress_weight
-            else self.compute)
-
-        self.task = None
-
-    def set_task(self, task):
-        self.task = task
-
+class OutputEmbed(BaseLayer):
     def init_weight(self, weight_home, path):
         v, h, dtype = (self.config.vocab_size, self.config.input_dim,
             self.config.dtype)
@@ -123,15 +90,6 @@ class OutputEmbed:
             weight_read_buf.store((w_ln.smart_copy(dst2), b_ln.smart_copy(dst2),
                 w_token.smart_copy(dst1)))
 
-    def init_cache_one_gpu_batch(self, cache_home):
-        pass  # do nothing
-
-    def load_cache(self, cache_home, cache_read_buf, i):
-        pass  # do nothing
-
-    def store_cache(self, cache_home, cache_write_buf, i):
-        pass  # do nothing
-
     def input_act_shape_and_dtype(self, batch_size, seq_len):
         return (batch_size, seq_len, self.config.input_dim), self.config.dtype
 
@@ -151,22 +109,13 @@ class OutputEmbed:
         hidden.val = h
 
 
-class SelfAttention:
+class SelfAttention(BaseLayer):
     def __init__(self, config, env, policy, layer_id):
-        self.config = config
-        self.env = env
+        super().__init__(config, env, policy)
         self.layer_id = layer_id
-        self.policy = policy
-        self.compute = self.env.gpu
-        self.weight_load_dst = (self.compute.compressed_device if policy.compress_weight
-            else self.compute)
-        self.attention_compute = (self.env.cpu if self.policy.cpu_cache_compute
+        self.attention_compute = (self.env.cpu
+            if self.policy.cpu_cache_compute
             else self.env.gpu)
-
-        self.task = None
-
-    def set_task(self, task):
-        self.task = task
 
     def init_weight(self, weight_home, path):
         h, dtype = (self.config.input_dim, self.config.dtype)
@@ -201,6 +150,7 @@ class SelfAttention:
         if k == 0:
             dst1 = self.weight_load_dst
             dst2 = self.compute
+            # 大块头（权重矩阵）走专用缓冲区通道，小不点（偏置/Norm）直接进计算核心
             weight_read_buf.store((
                 w_q.smart_copy(dst1), b_q.smart_copy(dst2),
                 w_k.smart_copy(dst1), b_k.smart_copy(dst2),
@@ -349,20 +299,10 @@ class SelfAttention:
         hidden.val = h
 
 
-class MLP:
+class MLP(BaseLayer):
     def __init__(self, config, env, policy, layer_id):
-        self.config = config
-        self.env = env
+        super().__init__(config, env, policy)
         self.layer_id = layer_id
-        self.policy = policy
-        self.compute = self.env.gpu
-        self.weight_load_dst = (self.compute.compressed_device if policy.compress_weight
-            else self.compute)
-
-        self.task = None
-
-    def set_task(self, task):
-        self.task = task
 
     def init_weight(self, weight_home, path):
         h, dtype = (self.config.input_dim, self.config.dtype)
@@ -393,15 +333,6 @@ class MLP:
                 wi.smart_copy(dst1), bi.smart_copy(dst2),
                 wo.smart_copy(dst1), bo.smart_copy(dst2),
                 w_ln.smart_copy(dst2), b_ln.smart_copy(dst2)))
-
-    def init_cache_one_gpu_batch(self, cache_home):
-        pass  # do nothing
-
-    def load_cache(self, cache_home, cache_read_buf, i):
-        pass  # do nothing
-
-    def store_cache(self, cache_home, cache_write_buf, i):
-        pass  # do nothing
 
     def input_act_shape_and_dtype(self, batch_size, seq_len):
         return (batch_size, seq_len, self.config.input_dim), self.config.dtype

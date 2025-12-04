@@ -262,6 +262,22 @@ class TorchDevice:
         data = token_embed + pos_embed
         return TorchTensor.create_from_torch(data, self)
 
+    def qwen25vl_text_input_embed(self, inputs, w_token, pad_token_id, donate):
+        # decompress weights
+        if w_token.device.device_type == DeviceType.COMPRESSED:
+            w_token = w_token.device.decompress(w_token)
+
+        token_ids = inputs.data
+        if donate[0]: inputs.delete()
+
+        # token embedding
+        token_embed = F.embedding(token_ids, w_token.data, pad_token_id)
+
+        # pos embedding is done in Attention QK
+
+        data = token_embed
+        return TorchTensor.create_from_torch(data, self)
+
     def opt_output_embed(self, inputs, w_ln, b_ln, w_token, donate,
                          do_sample, temperature):
         # decompress weights
@@ -271,6 +287,28 @@ class TorchDevice:
         b, s, h = inputs.shape
 
         hidden = F.layer_norm(inputs.data, (h,), weight=w_ln.data, bias=b_ln.data)
+        if donate[0]: inputs.delete()
+
+        # output embedding
+        logits = F.linear(hidden, w_token.data)
+        last_token_logits = logits[:,-1,:]
+
+        if do_sample and not temperature < 1e-5:
+            probs = torch.softmax(last_token_logits / temperature, dim=-1)
+            ids = torch.multinomial(probs, num_samples=1)
+        else:
+            ids = last_token_logits.argmax(dim=1, keepdim=True)
+        return TorchTensor.create_from_torch(ids, self)
+    
+    def qwen25vl_output_embed(self, inputs, w_ln, w_token, donate,
+                         do_sample, temperature, rms_norm_eps):
+        # decompress weights
+        if w_token.device.device_type == DeviceType.COMPRESSED:
+            w_token = w_token.device.decompress(w_token)
+
+        b, s, h = inputs.shape
+
+        hidden = F.rms_norm(inputs.data, (h,), weight=w_ln.data, eps=rms_norm_eps)
         if donate[0]: inputs.delete()
 
         # output embedding
@@ -468,6 +506,193 @@ class TorchDevice:
 
         return TorchTensor.create_from_torch(value, self), k_new, v_new
 
+    def gqa(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
+            w_out, w_ln, n_head, n_kv_head, donate, compress_cache, comp_config, rms_norm_eps):
+        """Grouped-Query Attention (prefill phase)."""
+        # decompress weights
+        if w_q.device.device_type == DeviceType.COMPRESSED:
+            w_q = w_q.device.decompress(w_q)
+            w_k = w_k.device.decompress(w_k)
+            w_v = w_v.device.decompress(w_v)
+            w_out = w_out.device.decompress(w_out)
+
+        b, s, h = inputs.shape
+        head_dim = h // n_head
+        scaling = head_dim ** -0.5
+
+        hidden = F.rms_norm(inputs.data, (h,), weight=w_ln.data, eps=rms_norm_eps)
+
+        # shape: (b, s, h)
+        q = F.linear(hidden, w_q.data, bias=b_q.data) * scaling
+        # shape: (b, s, h // n_head * n_kv_head)
+        head_k = F.linear(hidden, w_k.data, bias=b_k.data)
+        head_v = F.linear(hidden, w_v.data, bias=b_v.data)
+
+        # shape: (b, s, n_head, head_dim)
+        q = q.view(b, s, n_head, head_dim)
+        head_k = head_k.view(b, s, n_kv_head, head_dim)
+        k = torch.repeat_interleave(head_k, n_head // n_kv_head, dim=2)
+        head_v = head_v.view(b, s, n_kv_head, head_dim)
+        v = torch.repeat_interleave(head_v, n_head // n_kv_head, dim=2)
+
+        # shape: (b * n_head, s, head_dim)
+        q = q.permute(0, 2, 1, 3).reshape(b * n_head, s, head_dim)
+        # shape: (b * n_head, head_dim, s)
+        k = k.permute(0, 2, 3, 1).reshape(b * n_head, head_dim, s)
+        # shape: (b * n_head, s, head_dim)
+        v = v.permute(0, 2, 1, 3).reshape(b * n_head, s, head_dim)
+
+        # shape: (b * n_head, s, s)
+        attn_weights = torch.bmm(q, k)
+
+        # shape: (b, 1, s, s)
+        idx = torch.arange(s, device=self.dev)
+        causal_mask = (idx <= idx.view(s, 1)).view(1, 1, s, s)
+        mask = attention_mask.data.view(b, 1, 1, s) & causal_mask
+
+        # shape: (b, n_head, s, s)
+        attn_weights = attn_weights.view(b, n_head, s, s)
+        attn_weights = torch.where(mask, attn_weights, -1e4)
+        attn_weights = attn_weights.view(b * n_head, s, s)
+        attn_weights = F.softmax(attn_weights, dim=2)
+        # shape: (b, n_head, s, head_dim)
+        value = torch.bmm(attn_weights, v).view(b, n_head, s, head_dim)
+        # shape: (b, s, h)
+        value = value.transpose(1, 2).reshape(b, s, h)
+        value = F.linear(value, w_out.data, bias=None)
+
+        value.add_(inputs.data)
+
+        if donate[0]: inputs.delete()
+        if donate[1]: attention_mask.delete()
+
+        # (b, s, n_kv_head, head_dim) -> (s, b, n_kv_head, head_dim)
+        # -> (s, b * n_kv_head, head_dim)
+        head_k = head_k.permute(1, 0, 2, 3).reshape(s, b * n_kv_head, head_dim)
+        head_v = head_v.permute(1, 0, 2, 3).reshape(s, b * n_kv_head, head_dim)
+
+        if compress_cache:
+            head_k = self.compressed_device.compress(head_k, comp_config)
+            head_v = self.compressed_device.compress(head_v, comp_config)
+        else:
+            head_k = TorchTensor.create_from_torch(head_k, self)
+            head_v = TorchTensor.create_from_torch(head_v, self)
+
+        return TorchTensor.create_from_torch(value, self), head_k, head_v
+
+
+    def gqa_gen(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
+                w_out, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
+                attn_sparsity, compress_cache, comp_config, rms_norm_eps):
+        """Grouped-Query Attention (decoding phase)."""
+        # decompress weights
+        if w_q.device.device_type == DeviceType.COMPRESSED:
+            w_q = w_q.device.decompress(w_q)
+            w_k = w_k.device.decompress(w_k)
+            w_v = w_v.device.decompress(w_v)
+            w_out = w_out.device.decompress(w_out)
+
+        b, tgt_s, h = inputs.shape
+        src_s = attention_mask.shape[1]
+        head_dim = h // n_head
+        scaling = head_dim ** -0.5
+
+        hidden = F.rms_norm(inputs.data, (h,), weight=w_ln.data, eps=rms_norm_eps)
+
+        # shape: (b, 1, h)
+        q = F.linear(hidden, w_q.data, bias=b_q.data) * scaling
+        # shape: (b, 1, h // n_head * n_kv_head)
+        head_k_new = F.linear(hidden, w_k.data, bias=b_k.data)
+        head_v_new = F.linear(hidden, w_v.data, bias=b_v.data)
+
+        # shape: (b, 1, n_head, head_dim)
+        q = q.view(b, tgt_s, n_head, head_dim)
+        # shape: (b, 1, n_kv_head, head_dim)
+        head_k_new = head_k_new.view(b, tgt_s, n_kv_head, head_dim)
+        head_v_new = head_v_new.view(b, tgt_s, n_kv_head, head_dim)
+
+        # shape: (b * n_head, 1, head_dim)
+        q = q.permute(0, 2, 1, 3).reshape(b * n_head, tgt_s, head_dim)
+        # shape: (1, b * n_kv_head, head_dim)
+        head_k_new = head_k_new.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
+        head_v_new = head_v_new.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
+
+        if isinstance(k_cache, TorchTensor):
+            if attn_sparsity >= 1.0:  # Dense attention
+                if compress_cache:
+                    raise NotImplementedError("GQA compress cache in generation is not implemented yet.")
+                else:
+                    # shape: (s, b * n_kv_head, head_dim)
+                    head_k = k_cache.data[:src_s]
+                    head_v = v_cache.data[:src_s]
+                head_k[src_s - 1:src_s] = head_k_new
+                head_v[src_s - 1:src_s] = head_v_new
+
+                # shape: (s, b, n_kv_head, head_dim)
+                head_k = head_k.view(src_s, b, n_kv_head, head_dim)
+                head_v = head_v.view(src_s, b, n_kv_head, head_dim)
+
+                # shape: (s, b, n_head, head_dim)
+                k = torch.repeat_interleave(head_k, n_head // n_kv_head, dim=2)
+                v = torch.repeat_interleave(head_v, n_head // n_kv_head, dim=2)
+
+                # shape: (b * n_head, head_dim, s)
+                k = k.permute(1, 2, 3, 0).reshape(b * n_head, head_dim, src_s)
+                # shape: (b * n_head, s, head_dim)
+                v = v.permute(1, 2, 0, 3).reshape(b * n_head, src_s, head_dim)
+
+                if k.is_cuda:
+                    value = self._attention_value(q, k, v, attention_mask.data,
+                        b, src_s, tgt_s, n_head, head_dim)
+                else:
+                    q = q.float().cpu()
+                    k, v = k.float(), v.float()
+                    value = self._attention_value(q, k, v, attention_mask.data,
+                        b, src_s, tgt_s, n_head, head_dim).cuda().half()
+            else:  # Sparse attention
+                # shape: (s, b * n_kv_head, head_dim)
+                head_k = k_cache.data[:src_s]
+                head_k[src_s - 1:src_s] = head_k_new
+
+                # shape: (s, b, n_kv_head, head_dim)
+                head_k = head_k.view(src_s, b, n_kv_head, head_dim)
+
+                # shape: (s, b, n_head, head_dim)
+                k = torch.repeat_interleave(head_k, n_head // n_kv_head, dim=2)
+
+                # shape: (b * n_head, head_dim, s)
+                k = k.permute(1, 2, 3, 0).reshape(b * n_head, head_dim, src_s)
+
+                if k.is_cuda:
+                    value = self._sparse_attention_value_gqa(q, k, head_v_new, v_cache,
+                        attention_mask.data, b, src_s, tgt_s, n_head, n_kv_head, head_dim,
+                        attn_sparsity)
+                else:
+                    q = q.float().cpu()
+                    value = self._sparse_attention_value_gqa(q, k, head_v_new, v_cache,
+                        attention_mask.data, b, src_s, tgt_s, n_head, n_kv_head, head_dim,
+                        attn_sparsity).cuda().half()
+        else:  # Mixed device attention
+            raise NotImplementedError("GQA mixed device attention is not implemented yet.")
+            
+        # shape: (b, 1, h)
+        value = value.transpose(1, 2).view(b, tgt_s, h)
+        value = F.linear(value, w_out.data, bias=None)
+
+        value.add_(inputs.data)
+
+        if donate[0]: inputs.delete()
+        if donate[1]: attention_mask.delete()
+
+        if compress_cache:
+            raise NotImplementedError("GQA compress cache in generation is not implemented yet.")
+        else:
+            head_k_new = TorchTensor.create_from_torch(head_k_new, self)
+            head_v_new = TorchTensor.create_from_torch(head_v_new, self)
+
+        return TorchTensor.create_from_torch(value, self), head_k_new, head_v_new
+
+
     def _attention_weights(self, q, k, mask, b, src_s, n_head):
         # shape: (b * n_head, 1, s)
         attn_weights = torch.bmm(q, k)
@@ -488,6 +713,9 @@ class TorchDevice:
 
     def _sparse_attention_value(self, q, k, v_new, v_cache, mask, b,
                                 src_s, tgt_s, n_head, head_dim, attn_sparsity):
+        '''
+        注：这里的QK使用了完整K，根据attn_weights取topk的V加载
+        '''
         # shape: (b * n_head, 1, s)
         attn_weights = self._attention_weights(q, k, mask, b, src_s, n_head)
         topk = int(attn_sparsity * (attn_weights.shape[2] - 1))
@@ -516,6 +744,50 @@ class TorchDevice:
         v[topk:topk+1] = v_new
         # shape: (b * n_head, topk+1, head_dim)
         v = v.permute(1, 0, 2).reshape(b * n_head, topk+1, head_dim)
+
+        # shape: (b * n_head, 1, head_dim)
+        return torch.bmm(attn_weights, v).view(b, n_head, tgt_s, head_dim)
+
+    def _sparse_attention_value_gqa(self, q, k, head_v_new, v_cache, mask, b,
+                                src_s, tgt_s, n_head, n_kv_head, head_dim, attn_sparsity):
+        '''
+        注：这里的QK使用了完整K，根据attn_weights取topk的V加载
+        '''
+        # shape: (b * n_head, 1, s)
+        attn_weights = self._attention_weights(q, k, mask, b, src_s, n_head)
+        topk = int(attn_sparsity * (attn_weights.shape[2] - 1))
+        topk_weights, topk_indices = attn_weights[:, :, :-1].topk(
+            topk, dim=2, sorted=False)
+        topk_indices = topk_indices.view(b * n_head, topk).transpose(0, 1)
+        # shape: (b * n_head, 1, topk+1)
+        attn_weights = torch.cat([topk_weights,
+            attn_weights[:, :, -1].unsqueeze(-1)], dim=-1)
+
+        if k.is_cuda:
+            v_home = v_cache
+            v_buf = self.allocate((topk+1, b*n_kv_head, head_dim), np.float16)
+            topk_indices = topk_indices.cpu()
+        else:
+            (v_home, v_buf) = v_cache
+
+        # shape: (s, b * n_kv_head, head_dim)
+        indices_src = topk_indices
+        indices_tgt = (slice(0, indices_src.shape[0]), slice(0, v_home.shape[1]))
+        general_copy(v_buf, indices_tgt, v_home, indices_src)
+        v_home.device.synchronize()
+
+        # shape: (topk+1, b * n_kv_head, head_dim)
+        head_v = v_buf.data[:topk+1]
+        head_v[topk:topk+1] = head_v_new
+
+        # shape: (topk+1, b, n_kv_head, head_dim)
+        head_v = head_v.view(topk+1, b, n_kv_head, head_dim)
+
+        # shape: (topk+1, b, n_head, head_dim)
+        v = torch.repeat_interleave(head_v, n_head // n_kv_head, dim=2)
+
+        # shape: (b * n_head, topk+1, head_dim)
+        v = v.permute(1, 2, 0, 3).reshape(b * n_head, topk+1, head_dim)
 
         # shape: (b * n_head, 1, head_dim)
         return torch.bmm(attn_weights, v).view(b, n_head, tgt_s, head_dim)
@@ -582,6 +854,25 @@ class TorchDevice:
         out.add_(inputs.data)
         if donate[0]: inputs.delete()
         return TorchTensor.create_from_torch(out, self)
+    
+    def qwen25vl_mlp(self, inputs, w_g, w_u, w_d, w_ln, donate, rms_norm_eps):
+        # decompress weights
+        if w_g.device.device_type == DeviceType.COMPRESSED:
+            w_g = w_g.device.decompress(w_g)
+            w_u = w_u.device.decompress(w_u)
+            w_d = w_d.device.decompress(w_d)
+
+        b, s, h = inputs.shape
+
+        x= F.rms_norm(inputs.data, (h,), w_ln, eps=rms_norm_eps)
+        gate = F.linear(x, w_g.data, bias=None)
+        up = F.linear(x, w_u.data, bias=None)
+        down = F.linear(F.silu(gate) * up, w_d.data, bias=None)
+        out = down.add_(inputs.data)
+
+        if donate[0]: inputs.delete()
+        return TorchTensor.create_from_torch(out, self)
+    
 
     def synchronize(self):
         torch.cuda.synchronize()
@@ -844,14 +1135,14 @@ def general_copy(dst: TorchTensor, dst_indices: Tuple[slice],
           dst.device.device_type == DeviceType.CUDA and
           not src.data.is_pinned()):
         # The cpu tensor is not pinned, use pin_memory as a relay
-        src = src.data[src_indices] if src_indices else src.data
-        dst = dst.data[dst_indices] if dst_indices else dst.data
+        src = src.data[tuple(src_indices)] if src_indices else src.data
+        dst = dst.data[tuple(dst_indices)] if dst_indices else dst.data
         src = src.pin_memory()
         dst.copy_(src, non_blocking=True)
     else:
         # The normal path
-        src = src.data[src_indices] if src_indices else src.data
-        dst = dst.data[dst_indices] if dst_indices else dst.data
+        src = src.data[tuple(src_indices)] if src_indices else src.data
+        dst = dst.data[tuple(dst_indices)] if dst_indices else dst.data
         dst.copy_(src, non_blocking=True)
 
 
