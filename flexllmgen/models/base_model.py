@@ -305,7 +305,7 @@ class BaseLM(ABC):
         prompt_len, gen_len = task.prompt_len, task.gen_len
         self.output_ids = np.full((len(task.input_ids), prompt_len + gen_len),
             self.config.pad_token_id, dtype=np.int32)
-        self.stopped = np.zeros((len(task.input_ids), 1), dtype=bool) # 用于跟踪每个批次中的序列是否已停止生成
+        self.stopped = np.zeros((len(task.input_ids), 1), dtype=bool)
         self.output_ids[:, :prompt_len] = np.asarray(task.input_ids)
 
         # Intermediate tensors

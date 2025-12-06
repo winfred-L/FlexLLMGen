@@ -288,11 +288,10 @@ class Qwen25VLLM(BaseLM):
     由于只关注模型decoding阶段指标（TPOT等），encoder部分的实现
     并不影响最终性能的测量。
     '''
-    attention_layer_ids = None
+    attention_layer_ids: List[int] = None
     rotary_emb: Qwen2_5_VLRotaryEmbedding = None
-    # position_ids = None
-    rope_deltas = None
-    position_embeddings = None
+    rope_deltas: torch.Tensor = None # [batch size, 1]
+    position_embeddings: Tuple[torch.Tensor] = None # (cos, sin), each [Sections(T/H/W), Batch, Seq_Len, Head_Dim]
 
     def get_model_config(self) -> Qwen25VLConfig:
         return get_qwen25vl_config(self.name)
@@ -360,6 +359,8 @@ class Qwen25VLLM(BaseLM):
         '''
         assert k == 0, "Only support single GPU batch for encoder."
 
+        device = self.env.gpu.dev
+
         # load model config
         if self.config.name == "qwen25vl-7b":
             model_path = '/data/lyc/models/Qwen2.5-VL-7B-Instruct'
@@ -371,31 +372,31 @@ class Qwen25VLLM(BaseLM):
         )
 
         # load embedding layer and visual encoder
-        text_embed_layer = torch.nn.Embedding(qwen_config.vocab_size, qwen_config.hidden_size, self.config.pad_token_id)
-        visual_encoder = Qwen2_5_VisionTransformerPretrainedModel._from_config(qwen_config.vision_config)
-        self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=qwen_config)
+        text_embed_layer = torch.nn.Embedding(qwen_config.vocab_size, qwen_config.hidden_size, self.config.pad_token_id).to(device=device)
+        visual_encoder = Qwen2_5_VisionTransformerPretrainedModel._from_config(qwen_config.vision_config).to(device=device)
+        self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=qwen_config).to(device=device)
 
         # get inputs
-        input_ids = torch.tensor(self.task.input_ids, dtype=torch.int64)
-        attention_mask = self.task.attention_mask
-        pixel_values_videos = self.task.pixel_values_videos
+        input_ids = torch.tensor(self.task.input_ids, dtype=torch.int64).to(device=device)
+        attention_mask = self.task.attention_mask.to(device=device)
+        pixel_values_videos = self.task.pixel_values_videos.to(device=device)
         image_grid_thw = None
-        video_grid_thw = self.task.video_grid_thw
-        second_per_grid_ts = self.task.second_per_grid_ts
+        video_grid_thw = self.task.video_grid_thw.to(device=device)
+        second_per_grid_ts = self.task.second_per_grid_ts.to(device=device)
 
         # encode texts into embeddings
         inputs_embeds = text_embed_layer(input_ids) # [batch size, seq len, hidden dim]
         # encode videos into embeddings
         video_embeds = get_video_features(visual_encoder, pixel_values_videos, video_grid_thw)
-        video_embeds = torch.cat(video_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
+        video_embeds = torch.cat(video_embeds, dim=0).to(inputs_embeds.dtype)
         # merge video embeddings into text embeddings
         _, video_mask = get_placeholder_mask(text_embed_layer, qwen_config,
             input_ids, inputs_embeds=inputs_embeds, video_features=video_embeds
         )
-        inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
+        inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds) # float32
 
         # set hidden
-        hidden_states = inputs_embeds.to(self.env.gpu.dev)
+        hidden_states = inputs_embeds.to(dtype=torch.bfloat16)
         self.hidden[0][0][k].val = TorchTensor.create_from_torch(hidden_states, self.env.gpu)
         
         # set position embeddings
@@ -416,6 +417,8 @@ class Qwen25VLLM(BaseLM):
         del visual_encoder
     
     def set_position_embeddings(self, inputs_embeds, cur_pos_id):
+        inputs_embeds = inputs_embeds.to(device=self.env.gpu.dev)
+        
         # 获取当前生成的 token 数量，通常在解码阶段 seq_length 为 1
         batch_size, seq_length, _ = inputs_embeds.shape
         # 创建基础的相对位置索引 (0, 1, 2...)
@@ -439,8 +442,12 @@ class Qwen25VLLM(BaseLM):
             for k in range(self.num_gpu_batches):
                 self.update_attention_mask(i, k)
             for j in range(self.num_layers):
+                print(f'i={i}, j={j}')
                 for k in range(self.num_gpu_batches):
-                    self.load_weight(i, j, k, overlap=False)
+                    if j == 0 and i == 0:
+                        pass # skip loading the first InputEmbed layer
+                    else:
+                        self.load_weight(i, j, k, overlap=False)
 
                 for k in range(self.num_gpu_batches):
                     self.load_cache(i, j, k, overlap=False)
@@ -460,6 +467,9 @@ class Qwen25VLLM(BaseLM):
                         inputs_embeds = self.hidden[i][j][k].val.data
                         cur_pos_id = self.task.prompt_len + i
                         self.set_position_embeddings(inputs_embeds, cur_pos_id)
+
+                    # print(f'Generation step {i}, layer {j}, batch {k} done.')
+                    # import pdb; pdb.set_trace()
             
             timers("generate").stop()
 

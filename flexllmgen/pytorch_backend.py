@@ -536,6 +536,11 @@ class TorchDevice:
         head_v = head_v.view(b, s, n_kv_head, head_dim)
         v = torch.repeat_interleave(head_v, n_head // n_kv_head, dim=2)
 
+        # shape: (b, n_head, s, head_dim)
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
+
         # do rotary position embedding
         cos, sin = position_embeddings
         q, k = self._apply_multimodal_rotary_pos_emb(
@@ -543,11 +548,11 @@ class TorchDevice:
         )
 
         # shape: (b * n_head, s, head_dim)
-        q = q.permute(0, 2, 1, 3).reshape(b * n_head, s, head_dim)
+        q = q.reshape(b * n_head, s, head_dim)
         # shape: (b * n_head, head_dim, s)
-        k = k.permute(0, 2, 3, 1).reshape(b * n_head, head_dim, s)
+        k = k.permute(0, 1, 3, 2).reshape(b * n_head, head_dim, s)
         # shape: (b * n_head, s, head_dim)
-        v = v.permute(0, 2, 1, 3).reshape(b * n_head, s, head_dim)
+        v = v.reshape(b * n_head, s, head_dim)
 
         # shape: (b * n_head, s, s)
         attn_weights = torch.bmm(q, k)
@@ -619,8 +624,6 @@ class TorchDevice:
         head_k_new = head_k_new.view(b, tgt_s, n_kv_head, head_dim)
         head_v_new = head_v_new.view(b, tgt_s, n_kv_head, head_dim)
 
-        # shape: (b * n_head, 1, head_dim)
-        q = q.permute(0, 2, 1, 3).reshape(b * n_head, tgt_s, head_dim)
         # shape: (1, b * n_kv_head, head_dim)
         head_k_new = head_k_new.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
         head_v_new = head_v_new.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
@@ -633,6 +636,7 @@ class TorchDevice:
                     # shape: (s, b * n_kv_head, head_dim)
                     head_k = k_cache.data[:src_s]
                     head_v = v_cache.data[:src_s]
+                import pdb; pdb.set_trace()
                 head_k[src_s - 1:src_s] = head_k_new
                 head_v[src_s - 1:src_s] = head_v_new
 
@@ -644,16 +648,24 @@ class TorchDevice:
                 k = torch.repeat_interleave(head_k, n_head // n_kv_head, dim=2)
                 v = torch.repeat_interleave(head_v, n_head // n_kv_head, dim=2)
 
+                # shape: (b, n_head, 1, head_dim)
+                q = q.permute(0, 2, 1, 3)
+                # shape: (b, n_head, s, head_dim)
+                k = k.permute(1, 2, 0, 3)
+                v = v.permute(1, 2, 0, 3)
+
                 # do rotary position embedding
                 cos, sin = position_embeddings
                 q, k = self._apply_multimodal_rotary_pos_emb(
                     q, k, cos, sin, rope_scaling_mrope_section
                 )
 
+                # shape: (b * n_head, 1, head_dim)
+                q = q.reshape(b * n_head, tgt_s, head_dim)
                 # shape: (b * n_head, head_dim, s)
-                k = k.permute(1, 2, 3, 0).reshape(b * n_head, head_dim, src_s)
+                k = k.permute(0, 1, 3, 2).reshape(b * n_head, head_dim, src_s)
                 # shape: (b * n_head, s, head_dim)
-                v = v.permute(1, 2, 0, 3).reshape(b * n_head, src_s, head_dim)
+                v = v.reshape(b * n_head, src_s, head_dim)
 
                 if k.is_cuda:
                     value = self._attention_value(q, k, v, attention_mask.data,
@@ -674,14 +686,21 @@ class TorchDevice:
                 # shape: (s, b, n_head, head_dim)
                 k = torch.repeat_interleave(head_k, n_head // n_kv_head, dim=2)
 
+                # shape: (b, n_head, 1, head_dim)
+                q = q.permute(0, 2, 1, 3)
+                # shape: (b, n_head, s, head_dim)
+                k = k.permute(1, 2, 0, 3)
+
                 # do rotary position embedding
                 cos, sin = position_embeddings
                 q, k = self._apply_multimodal_rotary_pos_emb(
                     q, k, cos, sin, rope_scaling_mrope_section
                 )
 
+                # shape: (b * n_head, 1, head_dim)
+                q = q.reshape(b * n_head, tgt_s, head_dim)
                 # shape: (b * n_head, head_dim, s)
-                k = k.permute(1, 2, 3, 0).reshape(b * n_head, head_dim, src_s)
+                k = k.permute(0, 1, 3, 2).reshape(b * n_head, head_dim, src_s)
 
                 if k.is_cuda:
                     value = self._sparse_attention_value_gqa(q, k, head_v_new, v_cache,
@@ -713,9 +732,16 @@ class TorchDevice:
         return TorchTensor.create_from_torch(value, self), head_k_new, head_v_new
 
     
-    def _apply_multimodal_rotary_pos_emb(q, k, cos, sin, mrope_section, unsqueeze_dim=1):
-        """ copied from modeling_qwen2_5_vl.py """
+    def _apply_multimodal_rotary_pos_emb(self, q, k, cos, sin, mrope_section, unsqueeze_dim=1):
+        """
+        copied from modeling_qwen2_5_vl.py
         
+        q and k should be [batch, n_head, seq_len, head_dim]
+        """
+
+        cos = cos.to(device=q.device, dtype=q.dtype)
+        sin = sin.to(device=q.device, dtype=q.dtype)
+
         def rotate_half(x):
             """Rotates half the hidden dims of the input."""
             x1 = x[..., : x.shape[-1] // 2]
@@ -906,7 +932,7 @@ class TorchDevice:
 
         b, s, h = inputs.shape
 
-        x= F.rms_norm(inputs.data, (h,), w_ln, eps=rms_norm_eps)
+        x= F.rms_norm(inputs.data, (h,), w_ln.data, eps=rms_norm_eps)
         gate = F.linear(x, w_g.data, bias=None)
         up = F.linear(x, w_u.data, bias=None)
         down = F.linear(F.silu(gate) * up, w_d.data, bias=None)

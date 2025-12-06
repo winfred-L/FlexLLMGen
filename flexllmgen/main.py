@@ -265,7 +265,7 @@ def run_flexllmgen_qwen25vl(args):
         # 5. Warmup：先跑一次短生成进行预热
         print("warmup - generate")
         output_ids = model.generate(
-            warmup_inputs, max_new_tokens=1, verbose=args.verbose)
+            warmup_inputs, max_new_tokens=3, verbose=args.verbose)
 
         # 6. Benchmark：执行正式的生成任务，并记录时间
         print("benchmark - generate")
