@@ -58,27 +58,45 @@ def convert_weights_opt():
     print("转换完成！")
 
 
-# 注：numpy 不支持使用 bfloat16 格式保存，因此这里映射为 uint16
+
 def convert_weights_qwen25vl():
+    '''
+    功能：
+    1. 类似于 convert_weights_opt，将decoder部分权重以numpy格式保存至{MODEL_NAME}-np文件夹
+    2. 将decoder_embed和encoder部分权重整理为torch的state_dict格式，保存至{MODEL_NAME}-np文件夹
+    '''
+
     # 目标文件夹必须是 {model_name}-np 格式
     target_path = os.path.join(OUTPUT_PARENT_DIR, f"{MODEL_NAME}-np")
     os.makedirs(target_path, exist_ok=True)
-
-    print(f"正在将权重从 {SOURCE_PATH} 转换为 NumPy 格式至 {target_path} ...")
 
     # 查找所有的 safetensors 文件
     weight_files = glob.glob(os.path.join(SOURCE_PATH, "*.safetensors"))
     if not weight_files:
         print("错误：源路径下未找到 .safetensors 文件，请检查路径。")
         return
+    
+    # 初始化字典用于收集特定模块的权重
+    text_embed_state_dict = {}
+    visual_encoder_state_dict = {}
 
     for weight_file in tqdm(weight_files, desc="Converting files"):
         state = load_file(weight_file, device="cpu")
         
         for name, param in tqdm(state.items(), leave=False):
+            # 1. 处理 Visual Encoder 权重
             if name.startswith("visual."):
+                # 去除 "visual." 前缀，以便直接加载到 VisionTransformer 模型中
+                # 例如: visual.patch_embed.proj.weight -> patch_embed.proj.weight
+                new_key = name.replace("visual.", "", 1)
+                visual_encoder_state_dict[new_key] = param
                 continue
 
+            # 2. 处理 Text Embedding Layer 权重
+            if name == "model.embed_tokens.weight":
+                text_embed_state_dict["weight"] = param.clone()
+
+            # 3. 原有的 NumPy 转换逻辑
             name = name.replace("model.", "language_model.")
             
             param_path = os.path.join(target_path, name)
@@ -86,8 +104,20 @@ def convert_weights_qwen25vl():
             # 保存为 .pt 格式
             os.path.dirname(param_path) and os.makedirs(os.path.dirname(param_path), exist_ok=True)
             with open(param_path, "wb") as f:
-                np.save(f, param.cpu().detach().view(torch.uint16).numpy())
+                np.save(f, param.cpu().detach().view(torch.uint16).numpy()) # 注：numpy 不支持使用 bfloat16 格式保存，因此这里映射为 uint16
 
+    # 保存 text_embed_layer.bin
+    if text_embed_state_dict:
+        torch.save(text_embed_state_dict, os.path.join(target_path, 'text_embed_layer.bin'))
+    else:
+        print("警告：未找到 text_embed_layer (model.embed_tokens.weight) 权重。")
+
+    # 保存 visual_encoder.bin
+    if visual_encoder_state_dict:
+        torch.save(visual_encoder_state_dict, os.path.join(target_path, 'visual_encoder.bin'))
+    else:
+        print("警告：未找到 visual_encoder 权重。")
+    
     print("转换完成！")
 
 

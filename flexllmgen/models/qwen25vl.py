@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import os
 from tqdm import tqdm
+import gc
 
 from flexllmgen.timer import timers
 from flexllmgen.utils import (VisionTask, ExecutionEnv, GB, T, ValueHolder,
@@ -364,6 +365,7 @@ class Qwen25VLLM(BaseLM):
         # load model config
         if self.config.name == "qwen25vl-7b":
             model_path = '/data/lyc/models/Qwen2.5-VL-7B-Instruct'
+            load_weights_path = '/data/lyc/models/qwen25vl-7b-np'
         else:
             raise ValueError('Unimplemented.')
         qwen_config = AutoConfig.from_pretrained(
@@ -372,9 +374,23 @@ class Qwen25VLLM(BaseLM):
         )
 
         # load embedding layer and visual encoder
-        text_embed_layer = torch.nn.Embedding(qwen_config.vocab_size, qwen_config.hidden_size, self.config.pad_token_id).to(device=device)
-        visual_encoder = Qwen2_5_VisionTransformerPretrainedModel._from_config(qwen_config.vision_config).to(device=device)
-        self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=qwen_config).to(device=device)
+        text_embed_layer = torch.nn.Embedding(qwen_config.vocab_size, qwen_config.hidden_size, self.config.pad_token_id)
+        visual_encoder = Qwen2_5_VisionTransformerPretrainedModel._from_config(qwen_config.vision_config)
+        self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=qwen_config)    
+
+        # load weights
+        text_embed_layer.load_state_dict(torch.load(
+            os.path.join(load_weights_path, 'text_embed_layer.bin'), 
+            map_location='cpu'
+        ))
+        visual_encoder.load_state_dict(torch.load(
+            os.path.join(load_weights_path, 'visual_encoder.bin'), 
+            map_location='cpu'
+        ))
+
+        text_embed_layer = text_embed_layer.to(device=device).eval()
+        visual_encoder = visual_encoder.to(device=device).eval()
+        self.rotary_emb = self.rotary_emb.to(device=device).eval()
 
         # get inputs
         input_ids = torch.tensor(self.task.input_ids, dtype=torch.int64).to(device=device)
@@ -415,9 +431,9 @@ class Qwen25VLLM(BaseLM):
         # clear encoder weights
         del text_embed_layer
         del visual_encoder
-        import gc
-        gc.collect()
         torch.cuda.empty_cache()
+        gc.collect()
+        
     
     def set_position_embeddings(self, inputs_embeds, cur_pos_id):
         inputs_embeds = inputs_embeds.to(device=self.env.gpu.dev)

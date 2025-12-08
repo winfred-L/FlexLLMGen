@@ -87,7 +87,7 @@ def run_flexllmgen_opt(args):
     warmup_inputs = get_test_inputs(32, num_prompts, tokenizer)
     inputs = get_test_inputs(prompt_len, num_prompts, tokenizer)
 
-    gpu = TorchDevice("cuda:0")
+    gpu = TorchDevice(args.cuda_device)
     cpu = TorchDevice("cpu")
     disk = TorchDisk(args.offload_dir)
     env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
@@ -230,7 +230,7 @@ def run_flexllmgen_qwen25vl(args):
     )
     warmup_inputs = inputs
 
-    gpu = TorchDevice("cuda:0")
+    gpu = TorchDevice(args.cuda_device)
     cpu = TorchDevice("cpu")
     disk = TorchDisk(args.offload_dir)
     env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
@@ -369,6 +369,8 @@ def add_parser_arguments(parser):
     parser.add_argument("--log-file", type=str, default="auto") # 日志文件名
     parser.add_argument("--no-log", type=bool, default=True) # 不记录日志
     parser.add_argument("--verbose", type=int, default=2) # 控制输出信息的详细程度
+
+    parser.add_argument("--cuda-device", type=str, default='cuda:1')
 
 
 if __name__ == "__main__":
