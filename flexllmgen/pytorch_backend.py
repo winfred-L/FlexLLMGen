@@ -323,14 +323,18 @@ class TorchDevice:
         return TorchTensor.create_from_torch(ids, self)
 
     def init_cache_one_gpu_batch(self, config, task, policy):
+        num_kv_head = getattr(config, "num_key_value_heads", None)
         num_head, hidden_size, prompt_len, gen_len, gpu_batch_size = (
             config.n_head, config.input_dim, task.prompt_len, task.gen_len,
             policy.gpu_batch_size)
-        shape = (prompt_len + gen_len - 1, gpu_batch_size * num_head, hidden_size // num_head)
+        if num_kv_head is None: # MHA
+            shape = (prompt_len + gen_len - 1, gpu_batch_size * num_head, hidden_size // num_head)
+        else: # GQA
+            shape = (prompt_len + gen_len - 1, gpu_batch_size * num_kv_head, hidden_size // num_head)
         # NOTE: disable pin_memory due to high memory overhead
         pin_memory = False
-        k_cache = self.allocate(shape, np.float16, pin_memory=pin_memory)
-        v_cache = self.allocate(shape, np.float16, pin_memory=pin_memory)
+        k_cache = self.allocate(shape, config.dtype, pin_memory=pin_memory)
+        v_cache = self.allocate(shape, config.dtype, pin_memory=pin_memory)
         return k_cache, v_cache
 
     def mha(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
@@ -636,7 +640,6 @@ class TorchDevice:
                     # shape: (s, b * n_kv_head, head_dim)
                     head_k = k_cache.data[:src_s]
                     head_v = v_cache.data[:src_s]
-                import pdb; pdb.set_trace()
                 head_k[src_s - 1:src_s] = head_k_new
                 head_v[src_s - 1:src_s] = head_v_new
 
@@ -1024,12 +1027,16 @@ class TorchDisk:
             os.remove(tensor.data)
 
     def init_cache_one_gpu_batch(self, config, task, policy):
+        num_kv_head = getattr(config, "num_key_value_heads", None)
         num_head, hidden_size, prompt_len, gen_len, gpu_batch_size = (
             config.n_head, config.input_dim, task.prompt_len, task.gen_len,
             policy.gpu_batch_size)
-        shape = (prompt_len + gen_len - 1, gpu_batch_size * num_head, hidden_size // num_head)
-        k_cache = self.allocate(shape, np.float16)
-        v_cache = self.allocate(shape, np.float16)
+        if num_kv_head is None: # MHA
+            shape = (prompt_len + gen_len - 1, gpu_batch_size * num_head, hidden_size // num_head)
+        else: # GQA
+            shape = (prompt_len + gen_len - 1, gpu_batch_size * num_kv_head, hidden_size // num_head)
+        k_cache = self.allocate(shape, config.dtype)
+        v_cache = self.allocate(shape, config.dtype)
         return k_cache, v_cache
 
     def submit_copy(self, *args):
@@ -1095,26 +1102,33 @@ class TorchMixedDevice:
                 x.delete()
 
     def init_cache_one_gpu_batch(self, config, task, policy):
+        num_kv_head = getattr(config, "num_key_value_heads", None)
         num_head, hidden_size, prompt_len, gen_len, gpu_batch_size = (
             config.n_head, config.input_dim, task.prompt_len, task.gen_len,
             policy.gpu_batch_size)
-        shape = (prompt_len + gen_len - 1, gpu_batch_size * num_head, hidden_size // num_head)
 
-        # We have to round to a multiple of `num_head`
+        if num_kv_head is None:  # MHA
+            actual_num_head = num_head
+        else:  # GQA
+            actual_num_head = num_kv_head
+        
+        shape = (prompt_len + gen_len - 1, gpu_batch_size * actual_num_head, hidden_size // num_head)
+
+        # We have to round to a multiple of `actual_num_head`
         if policy.cache_disk_percent == 0:
-            len_gpu = int(shape[SEG_DIM] * policy.cache_gpu_percent / 100) // num_head * num_head
+            len_gpu = int(shape[SEG_DIM] * policy.cache_gpu_percent / 100) // actual_num_head * actual_num_head
             len_cpu = shape[SEG_DIM]  - len_gpu
             len_disk = 0
         else:
-            len_gpu = int(shape[SEG_DIM] * policy.cache_gpu_percent / 100) // num_head * num_head
-            len_cpu = int(shape[SEG_DIM] * policy.cache_cpu_percent / 100) // num_head * num_head
+            len_gpu = int(shape[SEG_DIM] * policy.cache_gpu_percent / 100) // actual_num_head * actual_num_head
+            len_cpu = int(shape[SEG_DIM] * policy.cache_cpu_percent / 100) // actual_num_head * actual_num_head
             len_disk = shape[SEG_DIM] - len_gpu - len_cpu
         lens = [len_gpu, len_cpu, len_disk]
 
         pin_memory = False
-        k_cache = self.allocate(shape, np.float16,
+        k_cache = self.allocate(shape, config.dtype,
             seg_lengths=lens, pin_memory=pin_memory)
-        v_cache = self.allocate(shape, np.float16,
+        v_cache = self.allocate(shape, config.dtype,
             seg_lengths=lens, pin_memory=pin_memory)
         return k_cache, v_cache
 

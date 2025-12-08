@@ -62,8 +62,6 @@ class InputEmbed(BaseLayer):
             w_token, w_pos, self.config.pad_token_id, donate)
         hidden.val = h # torch.Size([1, 32, 2048])
 
-        # import pdb; pdb.set_trace() 
-
 
 class OutputEmbed(BaseLayer):
     def init_weight(self, weight_home, path):
