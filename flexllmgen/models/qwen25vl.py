@@ -445,7 +445,7 @@ class Qwen25VLLM(BaseLM):
             for k in range(self.num_gpu_batches):
                 self.update_attention_mask(i, k)
             for j in range(self.num_layers):
-                print(f'i={i}, j={j}')
+                # print(f'i={i}, j={j}')
                 for k in range(self.num_gpu_batches):
                     if j == 0 and i == 0:
                         pass # skip loading the first InputEmbed layer
@@ -472,6 +472,8 @@ class Qwen25VLLM(BaseLM):
                         self.set_position_embeddings(inputs_embeds, cur_pos_id)
             
             timers("generate").stop()
+
+            print(f'i={i}, output_ids={self.output_ids[0, self.task.prompt_len + i]}')
 
     def generation_loop_debug_normal(self):
         raise ValueError('Unimplemented')

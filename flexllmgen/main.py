@@ -333,8 +333,8 @@ def add_parser_arguments(parser):
              "FlexLLMGen will automatically download them from HuggingFace.")
     parser.add_argument("--offload-dir", type=str, default="/data1/lyc/flexllmgen_offload_dir",
         help="The directory to offload tensors. ") # disk 卸载目录
-    parser.add_argument("--prompt-len", type=int, default=512) # 输入提示的长度
-    parser.add_argument("--gen-len", type=int, default=128) # 生成的最大新 Token 数量
+    parser.add_argument("--prompt-len", type=int, default=512) # 输入提示的最大长度
+    parser.add_argument("--gen-len", type=int, default=32) # 生成的最大新 Token 数量
     parser.add_argument("--cut-gen-len", type=int,
         help="Cut generation length for fast debugging.")
     parser.add_argument("--debug-mode", type=str, default=None,
