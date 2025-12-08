@@ -179,7 +179,6 @@ class Qwen2_5_VLAttention(SelfAttention):
         else:  # decoding
             mask, donate[1] = attention_mask.val.smart_copy(self.attention_compute)
             (k_cache, donate[10]), (v_cache, donate[11]) = cache_read_buf.pop()
-            print(k_cache.shape, v_cache.shape)
             h, new_k_cache, new_v_cache = self.compute.gqa_gen(h, mask, w_q,
                 b_q, w_k, b_k, w_v, b_v, w_out, w_ln, n_head, n_kv_head,
                 k_cache, v_cache, donate, self.policy.attn_sparsity,

@@ -415,6 +415,9 @@ class Qwen25VLLM(BaseLM):
         # clear encoder weights
         del text_embed_layer
         del visual_encoder
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
     
     def set_position_embeddings(self, inputs_embeds, cur_pos_id):
         inputs_embeds = inputs_embeds.to(device=self.env.gpu.dev)
@@ -467,9 +470,6 @@ class Qwen25VLLM(BaseLM):
                         inputs_embeds = self.hidden[i][j][k].val.data
                         cur_pos_id = self.task.prompt_len + i
                         self.set_position_embeddings(inputs_embeds, cur_pos_id)
-
-                    # print(f'Generation step {i}, layer {j}, batch {k} done.')
-                    # import pdb; pdb.set_trace()
             
             timers("generate").stop()
 

@@ -5,6 +5,7 @@ python3 -m flexllmgen.flex_opt --model facebook/opt-1.3b --gpu-batch-size 32 --p
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter(action='ignore', category=UserWarning)
 
 import argparse
 
@@ -262,17 +263,19 @@ def run_flexllmgen_qwen25vl(args):
     model = Qwen25VLLM(args.model, env, args.path, policy)
 
     try:
-        # 5. Warmup：先跑一次短生成进行预热
-        print("warmup - generate")
-        output_ids = model.generate(
-            warmup_inputs, max_new_tokens=3, verbose=args.verbose)
+        # # 5. Warmup：先跑一次短生成进行预热
+        # print("warmup - generate")
+        # with torch.inference_mode():
+        #     output_ids = model.generate(
+        #         warmup_inputs, max_new_tokens=2, verbose=args.verbose)
 
         # 6. Benchmark：执行正式的生成任务，并记录时间
         print("benchmark - generate")
         timers("generate").reset()
-        output_ids = model.generate(
-            inputs, max_new_tokens=args.gen_len,
-            debug_mode=args.debug_mode, cut_gen_len=cut_gen_len, verbose=args.verbose)
+        with torch.inference_mode():
+            output_ids = model.generate(
+                inputs, max_new_tokens=args.gen_len,
+                debug_mode=args.debug_mode, cut_gen_len=cut_gen_len, verbose=args.verbose)
         costs = timers("generate").costs
     finally:
         env.close_copy_threads()
@@ -294,8 +297,8 @@ def run_flexllmgen_qwen25vl(args):
     if DUMMY_WEIGHT not in args.path:
         outputs = processor.batch_decode(output_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
         show_str = "Outputs:\n" + 70 * '-' + "\n"
-        for i in [0, len(outputs)-1]:
-            show_str += f"{i}: {outputs[i]}\n"
+        for i, output in enumerate(outputs):
+            show_str += f"{i}: {output}\n"
             show_str += "-" * 70 + "\n"
         if args.verbose >= 2:
             print(show_str)
