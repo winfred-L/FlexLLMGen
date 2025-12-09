@@ -266,6 +266,7 @@ def run_flexllmgen_qwen25vl(args):
         with torch.inference_mode():
             output_ids = model.generate(
                 inputs, max_new_tokens=args.gen_len,
+                do_sample=args.do_sample, temperature=args.temperature,
                 debug_mode=args.debug_mode, cut_gen_len=cut_gen_len, verbose=args.verbose)
         costs = timers("generate").costs
     finally:
@@ -325,7 +326,7 @@ def add_parser_arguments(parser):
     parser.add_argument("--offload-dir", type=str, default="/data1/lyc/flexllmgen_offload_dir",
         help="The directory to offload tensors. ") # disk 卸载目录
     parser.add_argument("--prompt-len", type=int, default=512) # 输入提示的最大长度
-    parser.add_argument("--gen-len", type=int, default=32) # 生成的最大新 Token 数量
+    parser.add_argument("--gen-len", type=int, default=256) # 生成的最大新 Token 数量
     parser.add_argument("--cut-gen-len", type=int,
         help="Cut generation length for fast debugging.")
     parser.add_argument("--debug-mode", type=str, default=None,
@@ -361,7 +362,9 @@ def add_parser_arguments(parser):
     parser.add_argument("--no-log", type=bool, default=True) # 不记录日志
     parser.add_argument("--verbose", type=int, default=2) # 控制输出信息的详细程度
 
-    parser.add_argument("--cuda-device", type=str, default='cuda:1')
+    parser.add_argument("--cuda-device", type=str, default='cuda:0')
+    parser.add_argument("--do-sample", type=bool, default=False)
+    parser.add_argument("--temperature", type=float, default=0.000001)
 
 
 if __name__ == "__main__":

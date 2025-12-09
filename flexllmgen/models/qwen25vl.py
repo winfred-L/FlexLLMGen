@@ -470,9 +470,6 @@ class Qwen25VLLM(BaseLM):
                     else:
                         self.compute_layer(i, j, k)
                     
-                    print(f"{i=}, {j=}, {k=}")
-                    print(self.hidden[i][j][k].val.data)
-                    
                     self.store_hidden(i, j, k)
                     self.store_cache(i, j, k, overlap=False)
                     
@@ -486,8 +483,8 @@ class Qwen25VLLM(BaseLM):
             
             timers("generate").stop()
 
-            print(f'i={i}, output_ids={self.output_ids[0, self.task.prompt_len + i]}')
-            import pdb; pdb.set_trace()
+            # print(f'i={i}, output_ids={self.output_ids[0, self.task.prompt_len + i]}')
+            # import pdb; pdb.set_trace()
 
     def generation_loop_debug_normal(self):
         raise ValueError('Unimplemented')

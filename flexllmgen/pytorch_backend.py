@@ -116,7 +116,11 @@ class TorchTensor:
                 tmp = global_cpu_device.compressed_device.compress(tmp, self.data[2])
                 general_copy(self, None, tmp, None)
             else:
-                self.data.copy_(torch.from_numpy(np_array))
+                # check dtype: uint16 -> bfloat16
+                t = torch.from_numpy(np_array)
+                if t.dtype != self.dtype:
+                    t = t.view(self.dtype)
+                self.data.copy_(t)
 
     def load_from_np_file(self, filename):
         if self.device.device_type == DeviceType.DISK:
@@ -209,8 +213,8 @@ class TorchDevice:
             # so we only need one workspace instead of two.
             for i in range(1 if policy.sep_layer else 2):
                 shape = (max_seq_len, b * n_head, head_dim)
-                k_cache = self.allocate(shape, np.float32, pin_memory=False)
-                v_cache = self.allocate(shape, np.float32, pin_memory=False)
+                k_cache = self.allocate(shape, config.dtype, pin_memory=False)
+                v_cache = self.allocate(shape, config.dtype, pin_memory=False)
                 self.attention_compute_workspace.append((k_cache, v_cache))
         else:
             self.compressed_device.init_attention_compute_workspace(
@@ -315,7 +319,8 @@ class TorchDevice:
         logits = F.linear(hidden, w_token.data)
         last_token_logits = logits[:,-1,:]
 
-        if do_sample and not temperature < 1e-5:
+        #if do_sample and not temperature < 1e-5:
+        if do_sample:
             probs = torch.softmax(last_token_logits / temperature, dim=-1)
             ids = torch.multinomial(probs, num_samples=1)
         else:
@@ -677,7 +682,7 @@ class TorchDevice:
         attn_weights = torch.matmul(q, k) * scaling
 
         # shape: (b, 1, 1, s)
-        mask = mask.view(b, 1, 1, src_s)
+        mask = attention_mask.data.view(b, 1, 1, src_s)
         # shape: (b * n_head, 1, s)
         attn_weights = attn_weights.view(b, n_head, 1, src_s)
         attn_weights = torch.where(mask, attn_weights, -1e4)
@@ -699,11 +704,13 @@ class TorchDevice:
         if donate[0]: inputs.delete()
         if donate[1]: attention_mask.delete()
 
-        if compress_cache:
-            raise NotImplementedError("GQA compress cache in generation is not implemented yet.")
-        else:
-            save_k_new = TorchTensor.create_from_torch(save_k_new, self)
-            save_v_new = TorchTensor.create_from_torch(save_v_new, self)
+        # (b, n_kv_head, 1, head_dim) -> (1, b * n_kv_head, head_dim)
+        save_k_new = save_k_new.permute(2, 0, 1, 3).reshape(tgt_s, b * n_kv_head, head_dim)
+        # (b, 1, n_kv_head, head_dim) -> (1, b * n_kv_head, head_dim)
+        save_v_new = save_v_new.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
+
+        save_k_new = TorchTensor.create_from_torch(save_k_new, self)
+        save_v_new = TorchTensor.create_from_torch(save_v_new, self)
 
         return TorchTensor.create_from_torch(value, self), save_k_new, save_v_new
 
@@ -772,7 +779,7 @@ class TorchDevice:
 
         if k.is_cuda:
             v_home = v_cache
-            v_buf = self.allocate((topk+1, b*n_head, head_dim), np.float16)
+            v_buf = self.allocate((topk+1, b*n_head, head_dim), np.float16) # OPT dtype写死
             topk_indices = topk_indices.cpu()
         else:
             (v_home, v_buf) = v_cache
@@ -1170,6 +1177,10 @@ def map_to_torch_tensor(tensor, indices):
         data = torch.from_numpy(np.lib.format.open_memmap(tensor.data))
     else:
         data = tensor.data
+
+    # check dtype: uint16 -> bfloat16
+    if data.dtype != tensor.dtype:
+        data = data.view(tensor.dtype)
 
     # BC: this is supposed to only handle the sparse v_cache case
     if torch.is_tensor(indices):
