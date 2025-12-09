@@ -180,17 +180,15 @@ def run_flexllmgen_qwen25vl(args):
         min_pixels=min_pixels,
         use_fast=True
     )
-    config = AutoConfig.from_pretrained(
-        model_path, 
-        trust_remote_code=True
-    )
 
     # 2. 准备输入数据和执行环境
     num_prompts = args.num_gpu_batches * args.gpu_batch_size
     assert num_prompts == 1, "Only support batch size 1 for Qwen2.5-VL now."
     prompt_len, gen_len, cut_gen_len = args.prompt_len, args.gen_len, args.cut_gen_len
 
-    video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4"
+    # video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
+    # video_path = "/data/lyc/datasets/Video-MME/video/zNxi2s36tS0.mp4" #43s
+    video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
     question = "Please describe this video in detail."
     video_fps = 1.0
     messages = [
@@ -266,7 +264,7 @@ def run_flexllmgen_qwen25vl(args):
         with torch.inference_mode():
             output_ids = model.generate(
                 inputs, max_new_tokens=args.gen_len,
-                do_sample=args.do_sample, temperature=args.temperature,
+                do_sample=args.do_sample, temperature=args.temperature, stop=None,
                 debug_mode=args.debug_mode, cut_gen_len=cut_gen_len, verbose=args.verbose)
         costs = timers("generate").costs
     finally:
@@ -326,7 +324,7 @@ def add_parser_arguments(parser):
     parser.add_argument("--offload-dir", type=str, default="/data1/lyc/flexllmgen_offload_dir",
         help="The directory to offload tensors. ") # disk 卸载目录
     parser.add_argument("--prompt-len", type=int, default=512) # 输入提示的最大长度
-    parser.add_argument("--gen-len", type=int, default=256) # 生成的最大新 Token 数量
+    parser.add_argument("--gen-len", type=int, default=512) # 生成的最大新 Token 数量
     parser.add_argument("--cut-gen-len", type=int,
         help="Cut generation length for fast debugging.")
     parser.add_argument("--debug-mode", type=str, default=None,

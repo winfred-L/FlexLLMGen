@@ -318,7 +318,7 @@ class Qwen25VLLM(BaseLM):
             cut_gen_len=cut_gen_len,
             do_sample=do_sample,
             temperature=temperature,
-            stop=stop,
+            stop=self.config.eos_token_id if stop is None else stop,
 
             attention_mask=inputs.attention_mask,
             pixel_values_videos=inputs.pixel_values_videos,
@@ -485,6 +485,10 @@ class Qwen25VLLM(BaseLM):
 
             # print(f'i={i}, output_ids={self.output_ids[0, self.task.prompt_len + i]}')
             # import pdb; pdb.set_trace()
+
+            # stop when all batches are stopped
+            if np.all(self.stopped):
+                break
 
     def generation_loop_debug_normal(self):
         raise ValueError('Unimplemented')

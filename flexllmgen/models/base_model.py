@@ -235,7 +235,13 @@ class BaseLM(ABC):
                 stopped = self.stopped[left:right]
                 self.output_ids[left:right, pos:pos+1] = np.where(
                     stopped, self.config.pad_token_id, ids)
-                stopped[:] = np.logical_or(stopped, ids == self.task.stop)
+                if self.task.stop is int:
+                    flag = ids == self.task.stop
+                else:  # tuple
+                    flag = False
+                    for stop_id in self.task.stop:
+                        flag |= (ids == stop_id)
+                stopped[:] = np.logical_or(stopped, flag)
             else:
                 self.output_ids[left:right, pos:pos+1] = ids
         else:  # move to home

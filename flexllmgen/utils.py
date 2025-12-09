@@ -28,7 +28,7 @@ class Task:
 
     do_sample: bool
     temperature: float
-    stop: Optional[int]
+    stop: Union[int, Tuple[int], None]
 
 
 @dataclasses.dataclass(frozen=True)

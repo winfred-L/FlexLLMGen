@@ -6,7 +6,7 @@ except ImportError:
     print("qwen is not installed. Please install qwen-vl-utils to use this model.")
 
 model_path = '/data/lyc/models/Qwen2.5-VL-7B-Instruct'
-device = "cuda:1"
+device = "cuda:0"
 max_pixels: int = 16384*28*28
 min_pixels: int = 32*28*28
 
@@ -20,7 +20,9 @@ processor = AutoProcessor.from_pretrained(model_path, max_pixels=max_pixels, min
 
 
 # prepare input
-video_path = '/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4'
+# video_path = '/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4' #28s
+# video_path = "/data/lyc/datasets/Video-MME/video/zNxi2s36tS0.mp4" #43s
+video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
 question = 'Please describe this video in detail.'
 video_fps = 1.0
 messages = [

@@ -13,6 +13,7 @@ class Qwen25VLConfig:
     num_key_value_heads: int = 4  # GQA: KV heads count
     intermediate_size: int = 18944
     pad_token_id: int = 151643
+    eos_token_id: tuple[int] = (151645, 151643)
     hidden_act: str = "silu"
     rms_norm_eps: float = 1e-06
     rope_scaling_mrope_section: list[int] = dataclasses.field(default_factory=lambda: [16, 24, 24])
