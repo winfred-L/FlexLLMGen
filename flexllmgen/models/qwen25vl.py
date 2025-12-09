@@ -2,16 +2,10 @@ from typing import Union, List, Optional, Tuple
 import numpy as np
 import torch
 import os
-from tqdm import tqdm
 import gc
 
 from flexllmgen.timer import timers
-from flexllmgen.utils import (VisionTask, ExecutionEnv, GB, T, ValueHolder,
-    array_1d, array_2d, array_3d, str2bool, project_decode_latency,
-    torch_mem_stats, torch_dtype_to_np_dtype, write_benchmark_log,
-    read_benchmark_log)
-
-from flexllmgen.policy import Policy
+from flexllmgen.utils import VisionTask
 from flexllmgen.models.qwen25vl_config import Qwen25VLConfig, get_qwen25vl_config
 
 from flexllmgen.pytorch_backend import TorchTensor
@@ -475,7 +469,10 @@ class Qwen25VLLM(BaseLM):
                         self.encoder(k)
                     else:
                         self.compute_layer(i, j, k)
-                        # TODO: update position_ids
+                    
+                    print(f"{i=}, {j=}, {k=}")
+                    print(self.hidden[i][j][k].val.data)
+                    
                     self.store_hidden(i, j, k)
                     self.store_cache(i, j, k, overlap=False)
                     
@@ -484,12 +481,13 @@ class Qwen25VLLM(BaseLM):
                     # Note: when (j == 0 and i == 0), set position embeddings is done in encoder()
                     if j == 0 and i != 0:
                         inputs_embeds = self.hidden[i][j][k].val.data
-                        cur_pos_id = self.task.prompt_len + i
+                        cur_pos_id = self.task.prompt_len + i - 1
                         self.set_position_embeddings(inputs_embeds, cur_pos_id)
             
             timers("generate").stop()
 
             print(f'i={i}, output_ids={self.output_ids[0, self.task.prompt_len + i]}')
+            import pdb; pdb.set_trace()
 
     def generation_loop_debug_normal(self):
         raise ValueError('Unimplemented')

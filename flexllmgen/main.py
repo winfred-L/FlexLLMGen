@@ -9,13 +9,6 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 
 import argparse
 
-import os
-import pickle
-import time
-from typing import Union, List, Optional
-
-import numpy as np
-from tqdm import tqdm
 import torch
 from transformers import AutoTokenizer, AutoProcessor, AutoConfig
 try:
@@ -24,13 +17,11 @@ except ImportError:
     print("qwen is not installed. Please install qwen-vl-utils to use this model.")
 
 from flexllmgen.compression import CompressionConfig
-from flexllmgen.pytorch_backend import (TorchDevice, TorchDisk, TorchLink,
-    TorchMixedDevice, DeviceType, general_copy, fix_recursive_import)
+from flexllmgen.pytorch_backend import (TorchDevice, TorchDisk,
+    TorchMixedDevice, fix_recursive_import)
 from flexllmgen.timer import timers
-from flexllmgen.utils import (Task, ExecutionEnv, GB, T, ValueHolder,
-    array_1d, array_2d, array_3d, str2bool, project_decode_latency,
-    torch_mem_stats, torch_dtype_to_np_dtype, write_benchmark_log,
-    read_benchmark_log)
+from flexllmgen.utils import (ExecutionEnv, GB, str2bool, project_decode_latency,
+    write_benchmark_log)
 
 fix_recursive_import()
 
