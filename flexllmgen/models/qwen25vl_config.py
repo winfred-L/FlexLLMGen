@@ -1,10 +1,7 @@
-import dataclasses
-import torch
 import numpy as np
 
-@dataclasses.dataclass(frozen=True)
-class Qwen25VLConfig:
-    # --- Language Model Config ---
+class Qwen25VLFlexConfig:
+    # --- Text Config (Main LLM) ---
     name: str = "qwen25vl-7b"
     vocab_size: int = 152064
     hidden_size: int = 3584
@@ -16,7 +13,7 @@ class Qwen25VLConfig:
     eos_token_id: tuple[int] = (151645, 151643)
     hidden_act: str = "silu"
     rms_norm_eps: float = 1e-06
-    rope_scaling_mrope_section: list[int] = dataclasses.field(default_factory=lambda: [16, 24, 24])
+    rope_scaling_mrope_section: list[int] = [16, 24, 24]
     
     # --- Vision Config ---
     vision_hidden_size: int = 1280
@@ -26,6 +23,7 @@ class Qwen25VLConfig:
     vision_in_chans: int = 3
     vision_temporal_patch_size: int = 2
     
+    # --- Other Config ---
     dtype: type = np.uint16 # <==> torch.bfloat16
     bytes_per_param: int = 2
 
@@ -146,8 +144,8 @@ class Qwen25VLConfig:
 
 def get_qwen25vl_config(name, **kwargs):
     # TODO: 根据模型大小设置不同参数
-    config = Qwen25VLConfig()
-    return dataclasses.replace(config, **kwargs)
+    config = Qwen25VLFlexConfig()
+    return config
 
 
 if __name__ == "__main__":

@@ -6,11 +6,10 @@ import gc
 
 from flexllmgen.timer import timers
 from flexllmgen.utils import VisionTask
-from flexllmgen.models.qwen25vl_config import Qwen25VLConfig, get_qwen25vl_config
-
 from flexllmgen.pytorch_backend import TorchTensor
-
-from flexllmgen.models.qwen_layers import (
+from flexllmgen.models.base_model import BaseFlexLM
+from flexllmgen.models.qwen25vl_config import Qwen25VLFlexConfig, get_qwen25vl_config
+from flexllmgen.models.qwen25vl_layers import (
     Qwen2_5_VLTextInputEmbed,
     Qwen2_5_VLDecoderLayer,
     Qwen2_5_VLAttention,
@@ -18,14 +17,10 @@ from flexllmgen.models.qwen_layers import (
     Qwen2_5_VLOutputHead,
 )
 
-from flexllmgen.models.base_model import BaseLM
-
-
-
-
 from transformers import AutoConfig
-from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel, Qwen2_5_VLRotaryEmbedding
 from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel, Qwen2_5_VLRotaryEmbedding
+
 
 # modified from Qwen2_5_VLModel
 def get_video_features(
@@ -275,7 +270,7 @@ def get_rope_index(
 
 
 
-class Qwen25VLLM(BaseLM):
+class Qwen25VLFlexLM(BaseFlexLM):
     '''
     为简化实现，encoder部分并没有使用FlexGen的Layer组件构建，
     而是直接使用huggingface transformers的visual部分，完成
@@ -288,7 +283,7 @@ class Qwen25VLLM(BaseLM):
     rope_deltas: torch.Tensor = None # [batch size, 1]
     position_embeddings: Tuple[torch.Tensor] = None # (cos, sin), each [Sections(T/H/W), Batch, Seq_Len, Head_Dim]
 
-    def get_model_config(self) -> Qwen25VLConfig:
+    def get_model_config(self) -> Qwen25VLFlexConfig:
         return get_qwen25vl_config(self.name)
 
     def init_model_layers(self) -> List:
@@ -361,16 +356,16 @@ class Qwen25VLLM(BaseLM):
             model_path = '/data/lyc/models/Qwen2.5-VL-7B-Instruct'
             load_weights_path = '/data/lyc/models/qwen25vl-7b-np'
         else:
-            raise ValueError('Unimplemented.')
+            raise NotImplementedError(f"Model {self.config.name} not supported yet.")
         qwen_config = AutoConfig.from_pretrained(
             model_path, 
             trust_remote_code=True
         )
 
         # load embedding layer and visual encoder
-        text_embed_layer = torch.nn.Embedding(qwen_config.vocab_size, qwen_config.hidden_size, self.config.pad_token_id)
+        text_embed_layer = torch.nn.Embedding(self.config.vocab_size, self.config.hidden_size, self.config.pad_token_id)
         visual_encoder = Qwen2_5_VisionTransformerPretrainedModel._from_config(qwen_config.vision_config)
-        self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=qwen_config)    
+        self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=qwen_config.text_config)    
 
         # load weights
         text_embed_layer.load_state_dict(torch.load(
@@ -418,7 +413,6 @@ class Qwen25VLLM(BaseLM):
             second_per_grid_ts=second_per_grid_ts,
             attention_mask=attention_mask
         )
-        position_ids = position_ids
         self.rope_deltas = rope_deltas
         self.position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
         
@@ -432,20 +426,13 @@ class Qwen25VLLM(BaseLM):
     def set_position_embeddings(self, inputs_embeds, cur_pos_id):
         inputs_embeds = inputs_embeds.to(device=self.env.gpu.dev)
         
-        # 获取当前生成的 token 数量，通常在解码阶段 seq_length 为 1
         batch_size, seq_length, _ = inputs_embeds.shape
-        # 创建基础的相对位置索引 (0, 1, 2...)
         position_ids = torch.arange(seq_length, device=inputs_embeds.device)
-        # 扩展维度以适配 Qwen2-VL 的 3D RoPE 结构
-        # 形状变为 (3, batch_size, seq_length)，3 代表 (Time, Height, Width) 三个维度
         position_ids = position_ids.view(1, 1, -1).expand(3, batch_size, -1)
-        # 计算绝对位置
         delta = (cur_pos_id + self.rope_deltas).to(inputs_embeds.device)
-        # 广播 Delta 以匹配 batch 维度
         delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=1)
-        # 最终位置 = 基础位置 + (全局计数 + 偏移量)
         position_ids = position_ids + delta.to(position_ids.device)
-        # 使用 RoPE 计算位置嵌入
+        
         self.position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
 

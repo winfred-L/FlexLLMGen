@@ -27,11 +27,13 @@ fix_recursive_import()
 
 
 from flexllmgen.policy import Policy, DUMMY_WEIGHT
-from flexllmgen.models.opt_config import get_opt_config
-from flexllmgen.models.qwen25vl_config import get_qwen25vl_config
-from flexllmgen.models.opt import OptLM
-from flexllmgen.models.qwen25vl import Qwen25VLLM
 
+from flexllmgen.models.opt import OptLM
+from flexllmgen.models.opt_config import get_opt_config
+from flexllmgen.models.qwen25vl import Qwen25VLFlexLM
+from flexllmgen.models.qwen25vl_config import get_qwen25vl_config
+from flexllmgen.models.qwen3vl import Qwen3VLFlexLM
+from flexllmgen.models.qwen3vl_config import get_qwen3vl_config
 
 
 
@@ -186,9 +188,9 @@ def run_flexllmgen_qwen25vl(args):
     assert num_prompts == 1, "Only support batch size 1 for Qwen2.5-VL now."
     prompt_len, gen_len, cut_gen_len = args.prompt_len, args.gen_len, args.cut_gen_len
 
-    # video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
+    video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
     # video_path = "/data/lyc/datasets/Video-MME/video/zNxi2s36tS0.mp4" #43s
-    video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
+    # video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
     question = "Please describe this video in detail."
     video_fps = 1.0
     messages = [
@@ -249,7 +251,7 @@ def run_flexllmgen_qwen25vl(args):
           f"hidden size (prefill): {hidden_size/GB:.3f} GB")
 
     print("init weight...")
-    model = Qwen25VLLM(args.model, env, args.path, policy)
+    model = Qwen25VLFlexLM(args.model, env, args.path, policy)
 
     try:
         # # 5. Warmup：先跑一次短生成进行预热
@@ -313,6 +315,137 @@ def run_flexllmgen_qwen25vl(args):
 
 
 
+def run_flexllmgen_qwen3vl(args):
+    model_path = "/data/lyc/models/Qwen3-VL-8B-Instruct"
+    # 1. 根据模型名称加载 Processor
+    processor = AutoProcessor.from_pretrained(model_path)
+
+    # 2. 准备输入数据和执行环境
+    num_prompts = args.num_gpu_batches * args.gpu_batch_size
+    assert num_prompts == 1, "Only support batch size 1 for Qwen3-VL now."
+    prompt_len, gen_len, cut_gen_len = args.prompt_len, args.gen_len, args.cut_gen_len
+
+    video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
+    # video_path = "/data/lyc/datasets/Video-MME/video/zNxi2s36tS0.mp4" #43s
+    # video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
+    question = "Please describe this video in detail."
+    video_fps = 1.0
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "video",
+                    "video": video_path,
+                    "max_pixels": 360 * 420,
+                    "fps": video_fps,
+                },
+                {"type": "text", "text": question},
+            ],
+        }
+    ]
+    inputs = processor.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_dict=True,
+        return_tensors="pt"
+    )
+    warmup_inputs = inputs
+
+    gpu = TorchDevice(args.cuda_device)
+    cpu = TorchDevice("cpu")
+    disk = TorchDisk(args.offload_dir)
+    env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
+
+    # 3. 将命令行参数转换为 Policy 策略对象
+    policy = Policy(args.gpu_batch_size, args.num_gpu_batches,
+                    args.percent[0], args.percent[1],
+                    args.percent[2], args.percent[3],
+                    args.percent[4], args.percent[5],
+                    args.overlap, args.sep_layer, args.pin_weight,
+                    args.cpu_cache_compute, args.attn_sparsity,
+                    args.compress_weight,
+                    CompressionConfig(num_bits=4, group_size=64,
+                                      group_dim=0, symmetric=False),
+                    args.compress_cache,
+                    CompressionConfig(num_bits=4, group_size=64,
+                                      group_dim=2, symmetric=False))
+    assert not (args.compress_cache and args.attn_sparsity < 1.0), "Not implemented"
+
+    # 4. 预估模型权重、kv cache、中间激活值的大小，模型初始化
+    model_config = get_qwen3vl_config(args.model)
+    weight_size = model_config.model_bytes()
+    cache_size = model_config.cache_bytes(num_prompts, prompt_len + gen_len)
+    hidden_size = model_config.hidden_bytes(num_prompts, prompt_len + gen_len)
+    print(f"model weight size: {weight_size/GB:.3f} GB, "
+          f"kv cache size: {cache_size/GB:.3f} GB, "
+          f"hidden size (prefill): {hidden_size/GB:.3f} GB")
+
+    print("init weight...")
+    model = Qwen3VLFlexLM(args.model, env, args.path, policy)
+
+    try:
+        # # 5. Warmup：先跑一次短生成进行预热
+        # print("warmup - generate")
+        # with torch.inference_mode():
+        #     output_ids = model.generate(
+        #         warmup_inputs, max_new_tokens=2, verbose=args.verbose)
+
+        # 6. Benchmark：执行正式的生成任务，并记录时间
+        print("benchmark - generate")
+        timers("generate").reset()
+        with torch.inference_mode():
+            output_ids = model.generate(
+                inputs, max_new_tokens=args.gen_len,
+                do_sample=args.do_sample, temperature=args.temperature, stop=None,
+                debug_mode=args.debug_mode, cut_gen_len=cut_gen_len, verbose=args.verbose)
+        costs = timers("generate").costs
+    finally:
+        env.close_copy_threads()
+
+    # 7. 性能统计与日志记录
+    prefill_latency = costs[0]
+    prefill_throughput = num_prompts * prompt_len / prefill_latency
+    if cut_gen_len:  # project latency of cut_gen_len to gen_len
+        decode_latency = project_decode_latency(costs, prompt_len, gen_len)
+    else:
+        decode_latency = sum(costs[1:])
+    decode_throughput = num_prompts * (gen_len - 1) / max(decode_latency, 1e-10)
+    num_generated_tokens = num_prompts * gen_len
+    total_latency = prefill_latency + decode_latency
+    total_throughput = num_generated_tokens / total_latency
+    _, gpu_peak_mem = gpu.mem_stats()
+    _, cpu_peak_mem = cpu.mem_stats()
+
+    if DUMMY_WEIGHT not in args.path:
+        outputs = processor.batch_decode(output_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        show_str = "Outputs:\n" + 70 * '-' + "\n"
+        for i, output in enumerate(outputs):
+            show_str += f"{i}: {output}\n"
+            show_str += "-" * 70 + "\n"
+        if args.verbose >= 2:
+            print(show_str)
+
+    gpu.print_stats()
+    cpu.print_stats()
+    projected = bool(args.debug_mode or cut_gen_len)
+
+    if not args.no_log:
+        if args.log_file == "auto":
+            filename = get_filename(args) + ".log"
+        else:
+            filename = args.log_file
+
+        log_str = write_benchmark_log(filename,
+            model_config.model_bytes(), cache_size, hidden_size,
+            gpu_peak_mem, projected, prefill_latency, prefill_throughput,
+            decode_latency, decode_throughput, total_latency, total_throughput)
+    
+        if args.verbose >= 1:
+            print(log_str)
+
+
 
 def add_parser_arguments(parser):
     parser.add_argument("--model", type=str, default="opt-1.3b",
@@ -373,7 +506,8 @@ if __name__ == "__main__":
     assert len(args.percent) == 6
 
     # args.model = "opt-1.3b"
-    args.model = "qwen25vl-7b"
+    # args.model = "qwen25vl-7b"
+    args.model = "qwen3vl-8b"
 
     # 项目入口
     if args.model == "opt-1.3b":
@@ -381,6 +515,6 @@ if __name__ == "__main__":
     elif args.model == 'qwen25vl-7b':
         run_flexllmgen_qwen25vl(args)
     elif args.model == 'qwen3vl-8b':
-        pass # TODO
+        run_flexllmgen_qwen3vl(args)
     else:
         raise ValueError(f"Unsupported model: {args.model}")

@@ -1,521 +1,490 @@
-import os
-import torch
+from typing import Union, List, Optional, Tuple
 import numpy as np
-from typing import Union, List, Optional
-from tqdm import tqdm
+import torch
+import os
+import gc
 
-# 假设以下类和辅助函数已经在框架的其他地方定义好，此处直接引用以保持代码结构完整
-# from your_framework import QwenConfig, ExecutionEnv, Policy, ValueHolder, Task
-# from your_framework.layers import QwenMultimodalInput, QwenDecoderLayer, QwenOutputLayer
-# from your_framework.utils import array_1d, array_2d, array_3d, timers, DUMMY_WEIGHT
+from flexllmgen.timer import timers
+from flexllmgen.utils import VisionTask
+from flexllmgen.pytorch_backend import TorchTensor
+from flexllmgen.models.base_model import BaseFlexLM
+from flexllmgen.models.qwen3vl_config import Qwen3VLFlexConfig, get_qwen3vl_config
+from flexllmgen.models.qwen3vl_layers import (
+    Qwen3VLTextInputEmbed,
+    Qwen3VLTextAttention,
+    Qwen3VLTextMLP,
+    Qwen3VLTextDecoderLayer,
+    Qwen3VLOutputHead,
+)
 
-class Qwen3VLLM:
-    '''
-    Qwen3VLLM 类：管理 Qwen3-VL 多模态模型的执行流程。
-    
-    架构映射：
-    - Layer 0: Multimodal Input (Vision Encoder + Text Embed + Merger)
-    - Layer 1...N: Text Decoder Layers (RoPE + SelfAttn + SwiGLU MLP)
-    - Layer N+1: Output Layer (RMSNorm + LM Head)
-    '''
-    def __init__(self,
-                 config: Union[str, object], # 假设为 QwenConfig
-                 env: object,                # 假设为 ExecutionEnv
-                 path: str,
-                 policy: object):            # 假设为 Policy
-        
-        # 1. 配置与环境初始化
-        if isinstance(config, str):
-            # config = get_qwen_config(config) 
-            pass # 实际代码中需实现配置加载
-        self.config = config
-        self.env = env
-        self.path = path
-        self.policy = policy
-        self.num_gpu_batches = policy.num_gpu_batches
+from transformers import AutoConfig
+from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
+from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel, Qwen3VLTextRotaryEmbedding
 
-        # 2. 初始化网络层 (Layers Construction)
-        layers = []
-        
-        # [Layer 0] 多模态输入层
-        # 负责加载 model.visual 和 model.language_model.embed_tokens
-        layers.append(QwenMultimodalInput(self.config, self.env, self.policy))
-        
-        # [Layer 1 ~ N] 文本解码层
-        # 对应 model.language_model.layers
-        for i in range(self.config.num_hidden_layers):
-            layers.append(QwenDecoderLayer(self.config, self.env, self.policy, i))
-        
-        # [Layer N+1] 输出层
-        # 对应 model.language_model.norm 和 lm_head
-        layers.append(QwenOutputLayer(self.config, self.env, self.policy))
-        
-        self.layers = layers
-        self.num_layers = len(layers)
 
-        # 3. 确定激活值存储位置
-        if self.policy.act_gpu_percent == 100:
-            self.act_home = self.env.gpu
-        elif self.policy.act_cpu_percent == 100:
-            self.act_home = self.env.cpu
-        elif self.policy.act_disk_percent == 100:
-            self.act_home = self.env.disk
-        else:
-            raise NotImplementedError()
+# modified from Qwen3VLModel
+def get_video_features(
+    visual_encoder: Qwen3VLVisionModel,
+    pixel_values_videos: torch.FloatTensor,
+    video_grid_thw: Optional[torch.LongTensor] = None
+):
+    pixel_values_videos = pixel_values_videos.to(visual_encoder.dtype)
+    video_embeds, deepstack_video_embeds = visual_encoder(pixel_values_videos, grid_thw=video_grid_thw)
+    split_sizes = (video_grid_thw.prod(-1) // visual_encoder.spatial_merge_size**2).tolist()
+    image_embeds = torch.split(video_embeds, split_sizes)
+    return image_embeds, deepstack_video_embeds
 
-        # 4. 初始化 CUDA 流 (Streams)
-        self.load_weight_stream = torch.cuda.Stream()
-        self.load_cache_stream = torch.cuda.Stream()
-        self.store_cache_stream = torch.cuda.Stream()
+# modified from Qwen3VLModel
+def get_placeholder_mask(
+    text_embed_layer: torch.nn.Embedding,
+    config: Qwen3VLConfig,
+    input_ids: torch.LongTensor,
+    inputs_embeds: torch.FloatTensor,
+    image_features: Optional[torch.FloatTensor] = None,
+    video_features: Optional[torch.FloatTensor] = None,
+):
+    if input_ids is None:
+        special_image_mask = inputs_embeds == text_embed_layer(
+            torch.tensor(config.image_token_id, dtype=torch.long, device=inputs_embeds.device)
+        )
+        special_image_mask = special_image_mask.all(-1)
+        special_video_mask = inputs_embeds == text_embed_layer(
+            torch.tensor(config.video_token_id, dtype=torch.long, device=inputs_embeds.device)
+        )
+        special_video_mask = special_video_mask.all(-1)
+    else:
+        special_image_mask = input_ids == config.image_token_id
+        special_video_mask = input_ids == config.video_token_id
 
-        # 5. 初始化中间张量缓冲区 (Intermediate Tensors)
-        # 逻辑与 OptLM 保持一致
-        num_layers, num_gpu_batches = self.num_layers, self.policy.num_gpu_batches
+    n_image_tokens = special_image_mask.sum()
+    special_image_mask = special_image_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
+    if image_features is not None and inputs_embeds[special_image_mask].numel() != image_features.numel():
+        raise ValueError(
+            f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {image_features.shape[0]}"
+        )
 
-        self.cache_home = array_2d(num_layers, num_gpu_batches, ValueHolder)
-        self.cache_read_buf = array_2d(num_layers, num_gpu_batches, ValueHolder)
-        self.cache_write_buf = array_2d(num_layers, num_gpu_batches, ValueHolder)
-        self.weight_read_buf = array_1d(num_layers, ValueHolder)
-        self.attention_mask = array_1d(num_gpu_batches, ValueHolder)
+    n_video_tokens = special_video_mask.sum()
+    special_video_mask = special_video_mask.unsqueeze(-1).expand_as(inputs_embeds).to(inputs_embeds.device)
+    if video_features is not None and inputs_embeds[special_video_mask].numel() != video_features.numel():
+        raise ValueError(
+            f"Videos features and video tokens do not match: tokens: {n_video_tokens}, features {video_features.shape[0]}"
+        )
 
-        self.task = None
-        self.init_all_weights()
+    return special_image_mask, special_video_mask
 
-    def set_task(self, task):
-        self.task = task
-        for l in self.layers:
-            l.set_task(task)
+# modified from Qwen3VLModel
+def get_rope_index(
+    config: Qwen3VLConfig,
+    input_ids: Optional[torch.LongTensor] = None,
+    image_grid_thw: Optional[torch.LongTensor] = None,
+    video_grid_thw: Optional[torch.LongTensor] = None,
+    attention_mask: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Different from the original implementation, Qwen3VL use timestamps rather than absolute time position ids."""
 
-    def init_weight(self, j):
-        '''
-        初始化第 j 层的权重。
-        根据 Qwen3-VL 的结构映射文件路径。
-        '''
-        # 假设权重已转换为 numpy 格式存储在 path/model_name-np 目录下
-        expanded_path = os.path.abspath(os.path.expanduser(
-            os.path.join(self.path, f"{self.config.name}-np")))
-        
-        # 简单的权重存在性检查 (以 embed_tokens 为例)
-        check_path = os.path.join(expanded_path, "model.language_model.embed_tokens.weight")
-        if not os.path.exists(check_path) and "DUMMY_WEIGHT" not in check_path:
-            # download_qwen_weights(self.config.name, self.path)
-            pass
+    # Since we use timestamps to seperate videos, like <t1> <vision_start> <frame1> <vision_end> <t2> <vision_start> <frame2> <vision_end>, the video_grid_thw should also be split
+    if video_grid_thw is not None:
+        video_grid_thw = torch.repeat_interleave(video_grid_thw, video_grid_thw[:, 0], dim=0)
+        video_grid_thw[:, 0] = 1
 
-        # 构造 Layer j 对应的权重前缀或路径信息
-        layer_info = {}
-        if j == 0:
-            layer_info['type'] = 'input'
-            layer_info['visual_prefix'] = "model.visual"
-            layer_info['text_embed_prefix'] = "model.language_model.embed_tokens"
-        elif j == self.num_layers - 1:
-            layer_info['type'] = 'output'
-            layer_info['norm_prefix'] = "model.language_model.norm"
-            layer_info['head_prefix'] = "lm_head"
-        else:
-            layer_info['type'] = 'decoder'
-            # 注意：self.layers[1] 对应 text layer 0
-            layer_idx = j - 1
-            layer_info['prefix'] = f"model.language_model.layers.{layer_idx}"
-
-        # 调用底层 Layer 的 init_weight，传入特定路径信息
-        self.layers[j].init_weight(self.weight_home[j], expanded_path, layer_info)
-
-    def load_weight(self, i, j, k, overlap=True):
-        # 逻辑复用 OptLM
-        if j == self.num_layers:
-            j = 0
-            i += 1
-            if i == self.execute_gen_len:
-                return
-
-        if overlap:
-            with torch.cuda.stream(self.load_weight_stream):
-                self.layers[j].load_weight(self.weight_home[j], self.weight_read_buf[j], k)
-        else:
-            self.layers[j].load_weight(self.weight_home[j], self.weight_read_buf[j], k)
-
-    def delete_weight(self, j, k):
-        # 逻辑复用 OptLM
-        if k == 0:
-            for x in self.weight_home[j].pop():
-                if isinstance(x, ValueHolder):
-                    for y in x.pop():
-                        y.delete()
+    spatial_merge_size = config.vision_config.spatial_merge_size
+    image_token_id = config.image_token_id
+    video_token_id = config.video_token_id
+    vision_start_token_id = config.vision_start_token_id
+    mrope_position_deltas = []
+    if input_ids is not None and (image_grid_thw is not None or video_grid_thw is not None):
+        total_input_ids = input_ids
+        if attention_mask is None:
+            attention_mask = torch.ones_like(total_input_ids)
+        position_ids = torch.ones(
+            3,
+            input_ids.shape[0],
+            input_ids.shape[1],
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        image_index, video_index = 0, 0
+        attention_mask = attention_mask.to(total_input_ids.device)
+        for i, input_ids in enumerate(total_input_ids):
+            input_ids = input_ids[attention_mask[i] == 1]
+            image_nums, video_nums = 0, 0
+            vision_start_indices = torch.argwhere(input_ids == vision_start_token_id).squeeze(1)
+            vision_tokens = input_ids[vision_start_indices + 1]
+            image_nums = (vision_tokens == image_token_id).sum()
+            video_nums = (vision_tokens == video_token_id).sum()
+            input_tokens = input_ids.tolist()
+            llm_pos_ids_list: list = []
+            st = 0
+            remain_images, remain_videos = image_nums, video_nums
+            for _ in range(image_nums + video_nums):
+                if image_token_id in input_tokens and remain_images > 0:
+                    ed_image = input_tokens.index(image_token_id, st)
                 else:
-                    x.delete()
+                    ed_image = len(input_tokens) + 1
+                if video_token_id in input_tokens and remain_videos > 0:
+                    ed_video = input_tokens.index(video_token_id, st)
+                else:
+                    ed_video = len(input_tokens) + 1
+                if ed_image < ed_video:
+                    t, h, w = (
+                        image_grid_thw[image_index][0],
+                        image_grid_thw[image_index][1],
+                        image_grid_thw[image_index][2],
+                    )
+                    image_index += 1
+                    remain_images -= 1
+                    ed = ed_image
 
-    def init_cache(self, j, k):
-        # 初始化 KV Cache。
-        # 注意：Layer 0 (Input) 通常不需要 KV Cache，底层实现应直接返回
-        self.layers[j].init_cache_one_gpu_batch(self.cache_home[j][k])
+                else:
+                    t, h, w = (
+                        video_grid_thw[video_index][0],
+                        video_grid_thw[video_index][1],
+                        video_grid_thw[video_index][2],
+                    )
+                    video_index += 1
+                    remain_videos -= 1
+                    ed = ed_video
+                llm_grid_t, llm_grid_h, llm_grid_w = (
+                    t.item(),
+                    h.item() // spatial_merge_size,
+                    w.item() // spatial_merge_size,
+                )
+                text_len = ed - st
 
-    def load_cache(self, i, j, k, overlap=True):
-        # 逻辑复用 OptLM
-        if i == 0:  # prefill 阶段无需加载 cache
-            return
-        if k == self.num_gpu_batches:
-            k = 0
-            j += 1
-        if j == self.num_layers:
-            j = 0
-            i += 1
-            if i == self.execute_gen_len:
-                return
+                st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
+                llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
 
-        if overlap:
-            with torch.cuda.stream(self.load_cache_stream):
-                self.layers[j].load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i)
+                # t_index is always 0 because llm_grid_t is always 1 (we use timestamps to encode the temporal information for videos)
+                t_index = torch.arange(llm_grid_t).view(-1, 1).expand(-1, llm_grid_h * llm_grid_w).flatten()
+                h_index = torch.arange(llm_grid_h).view(1, -1, 1).expand(llm_grid_t, -1, llm_grid_w).flatten()
+                w_index = torch.arange(llm_grid_w).view(1, 1, -1).expand(llm_grid_t, llm_grid_h, -1).flatten()
+                llm_pos_ids_list.append(torch.stack([t_index, h_index, w_index]) + text_len + st_idx)
+                st = ed + llm_grid_t * llm_grid_h * llm_grid_w
+
+            if st < len(input_tokens):
+                st_idx = llm_pos_ids_list[-1].max() + 1 if len(llm_pos_ids_list) > 0 else 0
+                text_len = len(input_tokens) - st
+                llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
+
+            llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
+            position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
+            mrope_position_deltas.append(llm_positions.max() + 1 - len(total_input_ids[i]))
+        mrope_position_deltas = torch.tensor(mrope_position_deltas, device=input_ids.device).unsqueeze(1)
+        return position_ids, mrope_position_deltas
+    else:
+        if attention_mask is not None:
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            position_ids = position_ids.unsqueeze(0).expand(3, -1, -1).to(attention_mask.device)
+            max_position_ids = position_ids.max(0, keepdim=False)[0].max(-1, keepdim=True)[0]
+            mrope_position_deltas = max_position_ids + 1 - attention_mask.shape[-1]
         else:
-            self.layers[j].load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i)
+            position_ids = (
+                torch.arange(input_ids.shape[1], device=input_ids.device)
+                .view(1, 1, -1)
+                .expand(3, input_ids.shape[0], -1)
+            )
+            mrope_position_deltas = torch.zeros(
+                [input_ids.shape[0], 1],
+                device=input_ids.device,
+                dtype=input_ids.dtype,
+            )
 
-    def store_cache(self, i, j, k, overlap=True):
-        # 逻辑复用 OptLM
-        if k == -1:
-            k = self.num_gpu_batches - 1
-            j -= 1
-        if j == -1:
-            j = self.num_layers - 1
-            i -= 1
-            if i == -1:
-                return
-        if i == self.task.gen_len - 1:
-            self.cache_write_buf[j][k].pop()
-            return
+        return position_ids, mrope_position_deltas
 
-        if overlap:
-            with torch.cuda.stream(self.store_cache_stream):
-                self.layers[j].store_cache(self.cache_home[j][k], self.cache_write_buf[j][k], i)
-        else:
-            self.layers[j].store_cache(self.cache_home[j][k], self.cache_write_buf[j][k], i)
 
-    def delete_cache(self, j, k):
-        v = self.cache_home[j][k].pop()
-        if v:
-            for x in v:
-                x.delete()
 
-    def load_hidden(self, i, j, k):
-        # 管理 hidden states 的加载
-        if k == self.num_gpu_batches:
-            k = 0
-            j += 1
-        if j == self.num_layers:
-            j = 0
-            i += 1
-            if i == self.execute_gen_len:
-                return
 
-        dst = self.layers[j].compute
-        if j == 0:
-            # [Layer 0 特殊处理] 
-            # 这一层需要加载 input_ids。对于多模态模型，pixel_values 通常存储在 Task 对象中，
-            # 由 Layer 0 内部直接访问，不需要在这里通过 hidden buffer 传递。
-            gpu_batch_size = self.policy.gpu_batch_size
-            left, right = k * gpu_batch_size, (k + 1) * gpu_batch_size
-            
-            if i == 0:  # prefill: load full prompt
-                val = dst.allocate((gpu_batch_size, self.task.prompt_len), np.int32)
-                val.load_from_np(self.output_ids[left:right, :self.task.prompt_len])
-            else:  # decoding: load last token
-                pos = self.task.prompt_len + i
-                val = dst.allocate((gpu_batch_size, 1), np.int32)
-                val.load_from_np(self.output_ids[left:right, pos-1:pos])
-        else:
-            # 从上一层加载 hidden state
-            val = self.hidden[i][j-1][k].pop().move(dst)
-        
-        self.hidden[i][j][k].store(val)
 
-    def store_hidden(self, i, j, k):
-        # 管理 hidden states 的存储
-        if k == -1:
-            k = self.num_gpu_batches - 1
-            j -= 1
-        if j == -1:
-            j = self.num_layers - 1
-            i -= 1
-            if i == -1:
-                return
+class Qwen3VLFlexLM(BaseFlexLM):
+    '''
+    Qwen3VL相较于Qwen2.5VL的改变如下：
+    1. 视觉位置编码get_rope_index()实现不同，采用时间戳而非绝对位置编码
+    2. 添加了deepstack_merger，会将视觉特征与decoder前几层的hidden state融合
+    3. attention层添加了QK norm，作用在W_q与W_k之后，rotary_pos_emb之前
+    '''
 
-        if j == self.num_layers - 1:  # 最后一层输出处理
-            gpu_batch_size = self.policy.gpu_batch_size
-            left, right = k * gpu_batch_size, (k + 1) * gpu_batch_size
-            ids = self.hidden[i][j][k].pop().data.detach().cpu().numpy()
-            pos = self.task.prompt_len + i
-            
-            if self.task.stop:
-                stopped = self.stopped[left:right]
-                self.output_ids[left:right, pos:pos+1] = np.where(
-                    stopped, self.config.pad_token_id, ids)
-                stopped[:] = np.logical_or(stopped, ids == self.task.stop)
+    attention_layer_ids: List[int] = None
+    mlp_layer_ids: List[int] = None
+
+    rotary_emb: Qwen3VLTextRotaryEmbedding = None
+    rope_deltas: torch.Tensor = None # [batch size, 1]
+    position_embeddings: Tuple[torch.Tensor] = None # (cos, sin), each [Sections(T/H/W), Batch, Seq_Len, Head_Dim]
+
+    # args for deepstack merger
+    visual_pos_masks: torch.Tensor = None # shape: [batch_size, visual_seqlen]
+    deepstack_video_embeds: torch.Tensor = None # shape: [num_layers, visual_seqlen, embed_dim]
+
+
+    def get_model_config(self) -> Qwen3VLFlexConfig:
+        return get_qwen3vl_config(self.name)
+    
+
+    def init_model_layers(self) -> List:
+        layers = []
+        attention_layer_ids = []
+        mlp_layer_ids = []
+        layers.append(Qwen3VLTextInputEmbed(self.config, self.env, self.policy))
+        cnt = 1
+        for i in range(self.config.num_hidden_layers):
+            if self.policy.sep_layer:
+                layers.append(Qwen3VLTextAttention(self.config, self.env, self.policy, i))
+                attention_layer_ids.append(cnt)
+                layers.append(Qwen3VLTextMLP(self.config, self.env, self.policy, i))
+                mlp_layer_ids.append(cnt + 1)
+                cnt += 2
             else:
-                self.output_ids[left:right, pos:pos+1] = ids
-        else:
-            # 将中间结果移动到 act_home (CPU/GPU/Disk)
-            x = self.hidden[i][j][k]
-            if x.val:
-                x.val = x.val.move(self.act_home)
+                layers.append(Qwen3VLTextDecoderLayer(self.config, self.env, self.policy, i))
+                attention_layer_ids.append(cnt)
+                mlp_layer_ids.append(cnt)
+                cnt += 1
+        layers.append(Qwen3VLOutputHead(self.config, self.env, self.policy))
+        self.attention_layer_ids = attention_layer_ids
+        self.mlp_layer_ids = mlp_layer_ids
+        return layers
+    
 
-    def compute_layer(self, i, j, k):
-        # 执行计算
-        # 注意：Qwen 的 Attention Mask 和 RoPE 计算由 Layer 内部处理
-        self.layers[j].forward(self.hidden[i][j][k], self.cache_read_buf[j][k],
-            self.weight_read_buf[j], self.attention_mask[k],
-            self.cache_write_buf[j][k], i, k)
-
-    def sync(self):
-        self.env.disk.synchronize()
-        torch.cuda.synchronize()
-
-    def init_all_weights(self):
-        self.weight_home = array_1d(self.num_layers, ValueHolder)
-        for j in range(self.num_layers):
-            self.init_weight(j)
-
-    def delete_all_weights(self):
-        for j in range(self.num_layers):
-            self.delete_weight(j, 0)
-
-    def update_attention_mask(self, i, k):
-        # Qwen3-VL 的掩码逻辑。
-        # 如果 i > 0 (Decoding)，通常通过 KV Cache 的更新机制隐式处理，或者只需要简单的 extend
-        if i > 0:
-            mask = self.attention_mask[k]
-            if mask.val is not None:
-                # 假设底层支持 extend_attention_mask 操作
-                mask.val = mask.val.device.extend_attention_mask(mask.val, [True])
-            return
-
-        # Prefill 阶段构建 Mask
-        gpu_batch_size = self.policy.gpu_batch_size
-        left = k * gpu_batch_size
-        right = left + gpu_batch_size
-        input_ids = self.output_ids[left:right, :self.task.prompt_len]
-
-        attention_compute = (self.env.cpu if self.policy.cpu_cache_compute
-            else self.env.gpu)
-        val = attention_compute.allocate(
-            (self.policy.gpu_batch_size, self.task.prompt_len), bool)
-        
-        # 注意：Qwen3 可能使用特殊的 pad_token_id
-        val.load_from_np((input_ids != self.config.pad_token_id))
-        self.attention_mask[k].store(val)
-
-    def generate(self,
-                 inputs: Union[np.array, List[List[int]]],
-                 pixel_values: Optional[Union[np.array, List]] = None, # 新增：支持 Qwen 图像输入
-                 image_grid_thw: Optional[Union[np.array, List]] = None, # 新增：支持 Qwen3VL grid参数
-                 max_new_tokens: int = 32,
-                 do_sample: bool = False,
-                 temperature: float = 1.0,
-                 stop: Optional[int] = None,
-                 debug_mode: Optional[str] = None,
-                 cut_gen_len: Optional[int] = None,
-                 verbose: int = 0):
-        
-        # 构建 Task 对象，传入多模态数据
-        # 假设 Task 类已经扩展以支持 pixel_values
-        task = Task(
-            inputs=inputs,
-            pixel_values=pixel_values,       # Qwen3VL 特有
-            image_grid_thw=image_grid_thw,   # Qwen3VL 特有
-            prompt_len=len(inputs[0]),
+    def get_task(self, inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) -> VisionTask:
+        return VisionTask(
+            input_ids=np.array(inputs.input_ids),
+            prompt_len=inputs.input_ids.shape[1],
             gen_len=max_new_tokens,
             cut_gen_len=cut_gen_len,
             do_sample=do_sample,
             temperature=temperature,
-            stop=stop,
+            stop=self.config.eos_token_id if stop is None else stop,
+
+            attention_mask=inputs.attention_mask,
+            pixel_values_videos=inputs.pixel_values_videos,
+            video_grid_thw=inputs.video_grid_thw,
+            second_per_grid_ts=None, # qwen3vl没有这个参数
         )
-        
-        num_layers = self.num_layers
-        num_gpu_batches = self.num_gpu_batches
-        gpu_batch_size = self.policy.gpu_batch_size
-        overlap = self.policy.overlap
-        prompt_len, gen_len = task.prompt_len, task.gen_len
-        self.execute_gen_len = task.cut_gen_len if task.cut_gen_len else task.gen_len
-
-        # Output token ids
-        self.output_ids = np.full((len(task.inputs), prompt_len + gen_len),
-            self.config.pad_token_id, dtype=np.int32)
-        self.stopped = np.zeros((len(task.inputs), 1), dtype=bool)
-        self.output_ids[:, :prompt_len] = np.asarray(task.inputs)
-        assert gpu_batch_size * num_gpu_batches == len(task.inputs)
-
-        # 清理缓冲区
-        num_layers, num_gpu_batches = self.num_layers, self.policy.num_gpu_batches
-        for j in range(num_layers):
-            for k in range(num_gpu_batches):
-                self.cache_home[j][k].clear()
-                self.cache_read_buf[j][k].clear()
-                self.cache_write_buf[j][k].clear()
-        for j in range(num_layers):
-            self.weight_read_buf[j].clear()
-        for k in range(num_gpu_batches):
-            self.attention_mask[k].clear()
-        
-        # 初始化 Hidden Buffer: [gen_len, num_layers, num_gpu_batches]
-        self.hidden = array_3d(gen_len, num_layers, num_gpu_batches, ValueHolder)
-
-        # Init cache & Task
-        self.set_task(task)
-        for j in range(num_layers):
-            for k in range(num_gpu_batches):
-                self.init_cache(j, k)
-        
-        if self.policy.cpu_cache_compute:
-            self.env.cpu.init_attention_compute_workspace(self.config, self.task, self.policy)
-
-        # 执行生成循环 (Pipeline Loop)
-        if debug_mode is None:
-            if not overlap:
-                self.generation_loop_normal()
-            else:
-                if num_gpu_batches == 1:
-                    self.generation_loop_overlap_single_batch()
-                else:
-                    self.generation_loop_overlap_multi_batch()
-        elif debug_mode == "fewer_batch":
-            if num_gpu_batches == 1:
-                self.generation_loop_debug_single_batch()
-            else:
-                self.generation_loop_debug_multi_batch()
-        elif debug_mode == "breakdown":
-            self.generation_loop_debug_normal()
-        else:
-            raise ValueError(f"Invalid debug mode: {debug_mode}")
-
-        # 清理 Cache
-        for j in range(num_layers):
-            for k in range(num_gpu_batches):
-                self.delete_cache(j, k)
-        if self.policy.cpu_cache_compute:
-            self.env.cpu.del_attention_compute_workspace()
-
-        return self.output_ids
-
-    # --- 以下循环逻辑与 OptLM 保持一致，无需更改 ---
-    # 因为所有模型特定的差异已被封装在 Layer 对象和 init_weight 中
     
+
+    def compute_layer(self, i, j, k):
+        '''
+        为attention层计算额外传入position_embeddings
+        为mlp层计算额外传入visual_pos_masks, deepstack_video_embeds
+        '''
+        if j in self.attention_layer_ids and j in self.mlp_layer_ids:
+            # no sep layer case
+            self.layers[j].forward(
+                self.hidden[i][j][k], 
+                self.cache_read_buf[j][k],
+                self.weight_read_buf[j], 
+                self.attention_mask[k],
+                self.cache_write_buf[j][k], 
+                i, k,
+                self.position_embeddings,
+                self.visual_pos_masks,
+                self.deepstack_video_embeds,
+            )
+        elif j in self.attention_layer_ids:
+            self.layers[j].forward(
+                self.hidden[i][j][k], 
+                self.cache_read_buf[j][k],
+                self.weight_read_buf[j], 
+                self.attention_mask[k],
+                self.cache_write_buf[j][k], 
+                i, k,
+                self.position_embeddings,
+            )
+        elif j in self.mlp_layer_ids:
+            # add visual features to the hidden states of first several decoder layers (only prefill)
+            mlp_layer_index = self.mlp_layer_ids.index(j)
+            if i == 0 and mlp_layer_index in range(len(self.deepstack_video_embeds)):
+                self.layers[j].forward(
+                    self.hidden[i][j][k], 
+                    self.cache_read_buf[j][k],
+                    self.weight_read_buf[j], 
+                    self.attention_mask[k],
+                    self.cache_write_buf[j][k], 
+                    i, k,
+                    self.visual_pos_masks,
+                    self.deepstack_video_embeds[mlp_layer_index],
+                )
+            else:
+                self.layers[j].forward(
+                    self.hidden[i][j][k], 
+                    self.cache_read_buf[j][k],
+                    self.weight_read_buf[j], 
+                    self.attention_mask[k],
+                    self.cache_write_buf[j][k], 
+                    i, k,
+                    None,
+                    None,
+                )
+        else:
+            self.layers[j].forward(
+                self.hidden[i][j][k], 
+                self.cache_read_buf[j][k],
+                self.weight_read_buf[j], 
+                self.attention_mask[k],
+                self.cache_write_buf[j][k], 
+                i, k
+            )
+
+
+    def encoder(self, k):
+        '''
+        huggingface transformers中视觉编码器的原始实现，
+        包含视频编码与模态拼接。
+        '''
+        assert k == 0, "Only support single GPU batch for encoder."
+
+        device = self.env.gpu.dev
+
+        # load model config
+        if self.config.name == "qwen3vl-8b":
+            model_path = '/data/lyc/models/Qwen3-VL-8B-Instruct'
+            load_weights_path = '/data/lyc/models/qwen3vl-8b-np'
+        else:
+            raise NotImplementedError(f"Model {self.config.name} not supported yet.")
+        qwen_config = AutoConfig.from_pretrained(
+            model_path, 
+            trust_remote_code=True
+        )
+
+        # load embedding layer and visual encoder
+        text_embed_layer = torch.nn.Embedding(self.config.vocab_size, self.config.hidden_size, self.config.pad_token_id)
+        visual_encoder = Qwen3VLVisionModel._from_config(qwen_config.vision_config)
+        self.rotary_emb = Qwen3VLTextRotaryEmbedding(config=qwen_config.text_config)
+
+        # load weights
+        text_embed_layer.load_state_dict(torch.load(
+            os.path.join(load_weights_path, 'text_embed_layer.bin'), 
+            map_location='cpu'
+        ))
+        visual_encoder.load_state_dict(torch.load(
+            os.path.join(load_weights_path, 'visual_encoder.bin'), 
+            map_location='cpu'
+        ))
+
+        text_embed_layer = text_embed_layer.to(device=device).eval()
+        visual_encoder = visual_encoder.to(device=device).eval()
+        self.rotary_emb = self.rotary_emb.to(device=device).eval()
+
+        # get inputs
+        input_ids = torch.tensor(self.task.input_ids, dtype=torch.int64).to(device=device)
+        attention_mask = self.task.attention_mask.to(device=device)
+        pixel_values_videos = self.task.pixel_values_videos.to(device=device)
+        image_grid_thw = None
+        video_grid_thw = self.task.video_grid_thw.to(device=device)
+
+        # encode texts into embeddings
+        inputs_embeds = text_embed_layer(input_ids) # [batch size, seq len, hidden dim]
+        # encode videos into embeddings
+        video_embeds, deepstack_video_embeds = get_video_features(visual_encoder, pixel_values_videos, video_grid_thw)
+        video_embeds = torch.cat(video_embeds, dim=0).to(inputs_embeds.device, inputs_embeds.dtype)
+        _, video_mask = get_placeholder_mask(
+            text_embed_layer, qwen_config,
+            input_ids, inputs_embeds=inputs_embeds, video_features=video_embeds
+        )
+        inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
+
+        # set deepstack merger args
+        self.visual_pos_masks = video_mask[..., 0]
+        self.deepstack_video_embeds = deepstack_video_embeds
+        
+        # set hidden
+        hidden_states = inputs_embeds.to(dtype=torch.bfloat16)
+        self.hidden[0][0][k].val = TorchTensor.create_from_torch(hidden_states, self.env.gpu)
+
+        # get attention_mask_tensor
+        attention_mask_tensor = (
+            attention_mask if not isinstance(attention_mask, dict) else attention_mask["full_attention"]
+        )
+        if attention_mask_tensor is not None and attention_mask_tensor.ndim == 4:
+            attention_mask_tensor = torch.diagonal(attention_mask_tensor[:, 0], dim1=1, dim2=2)
+            # Only apply conversion for floating point tensors (inverted masks)
+            if attention_mask_tensor.dtype.is_floating_point:
+                attention_mask_tensor = attention_mask_tensor / torch.finfo(attention_mask_tensor.dtype).min
+                attention_mask_tensor = (1.0 - attention_mask_tensor).int()
+        
+        # set position embeddings
+        position_ids, rope_deltas = get_rope_index(
+            qwen_config,
+            input_ids,
+            image_grid_thw,
+            video_grid_thw,
+            attention_mask=attention_mask_tensor,
+        )
+        self.rope_deltas = rope_deltas
+        self.position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+
+        # clear encoder weights
+        del text_embed_layer
+        del visual_encoder
+        torch.cuda.empty_cache()
+        gc.collect()
+
+
+    def set_position_embeddings(self, inputs_embeds, cur_pos_id):
+        inputs_embeds = inputs_embeds.to(device=self.env.gpu.dev)
+
+        batch_size, seq_length, _ = inputs_embeds.shape
+        position_ids = torch.arange(seq_length, device=inputs_embeds.device)
+        position_ids = position_ids.view(1, -1).expand(batch_size, -1)
+        delta = (cur_pos_id + self.rope_deltas).to(inputs_embeds.device)
+        delta = delta.repeat_interleave(batch_size // delta.shape[0], dim=0)
+        position_ids = position_ids.add(delta)
+        position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+
+        self.position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+
+
     def generation_loop_normal(self):
         for i in range(self.execute_gen_len):
             timers("generate").start()
             for k in range(self.num_gpu_batches):
                 self.update_attention_mask(i, k)
             for j in range(self.num_layers):
+                # print(f'i={i}, j={j}')
                 for k in range(self.num_gpu_batches):
-                    self.load_weight(i, j, k, overlap=False)
+                    if j == 0 and i == 0:
+                        pass # skip loading the first InputEmbed layer
+                    else:
+                        self.load_weight(i, j, k, overlap=False)
 
                 for k in range(self.num_gpu_batches):
                     self.load_cache(i, j, k, overlap=False)
                     self.load_hidden(i, j, k)
-                    self.compute_layer(i, j, k)
+                    if j == 0 and i == 0: # replace the first InputEmbed layer with visual encoder
+                        self.encoder(k)
+                    else:
+                        self.compute_layer(i, j, k)
+                    
                     self.store_hidden(i, j, k)
                     self.store_cache(i, j, k, overlap=False)
-            timers("generate").stop()
-
-    def generation_loop_debug_normal(self):
-        execute_num_batches = 20
-        batch_ct = 0
-        pbar = tqdm(total=execute_num_batches)
-        timers("prefill_total").reset()
-        timers("decoding_gpu_batch").reset()
-        # ... (定时器重置省略) ...
-        load_weight_timer = timers("load_weight")
-
-        for i in range(self.execute_gen_len):
-            if i == 0:
-                timers("prefill_total").start()
-                # ... (定时器变量赋值省略) ...
-            else:
-                # ... (定时器变量赋值省略) ...
-                pass
+                    
+                    # set position embeddings to be shared across all attention layers
+                    # do after input embedding layer, before all attention layers
+                    # Note: when (j == 0 and i == 0), set position embeddings is done in encoder()
+                    if j == 0 and i != 0:
+                        inputs_embeds = self.hidden[i][j][k].val.data
+                        cur_pos_id = self.task.prompt_len + i - 1
+                        self.set_position_embeddings(inputs_embeds, cur_pos_id)
             
-            # 简化代码，逻辑同 OptLM
-            for k in range(self.num_gpu_batches):
-                self.update_attention_mask(i, k)
-
-            for j in range(self.num_layers):
-                if i > 0: timers("decoding_gpu_batch").start()
-
-                load_weight_timer.start(self.sync)
-                for k in range(self.num_gpu_batches):
-                    self.load_weight(i, j, k)
-                load_weight_timer.stop(self.sync)
-
-                for k in range(self.num_gpu_batches):
-                    self.load_cache(i, j, k)
-                    self.load_hidden(i, j, k)
-                    self.compute_layer(i, j, k)
-                    self.store_hidden(i, j, k)
-                    self.store_cache(i, j, k)
-
-                if i > 0:
-                    timers("decoding_gpu_batch").stop()
-                    pbar.update(1)
-                    batch_ct += 1
-                if batch_ct >= execute_num_batches: break
-            if batch_ct >= execute_num_batches: break
-            if i == 0: timers("prefill_total").stop(self.sync)
-        
-        # ... (Debug 打印省略) ...
-
-    def generation_loop_overlap_single_batch(self):
-        # Prologue
-        for k in range(self.num_gpu_batches):
-            self.load_weight(0, 0, k)
-        self.sync()
-
-        # Generate
-        for i in range(self.execute_gen_len):
-            timers("generate").start()
-            self.update_attention_mask(i, 0)
-            for j in range(self.num_layers):
-                self.load_weight(i, j+1, 0)
-                self.load_cache(i, j+1, 0)
-                self.load_hidden(i, j, 0)
-                self.compute_layer(i, j, 0)
-                self.store_cache(i, j-1, 0)
-                self.store_hidden(i, j, 0)
-                self.sync()
             timers("generate").stop()
 
-            if self.task.stop and np.all(self.stopped):
+            # print(f'i={i}, output_ids={self.output_ids[0, self.task.prompt_len + i]}')
+            # import pdb; pdb.set_trace()
+
+            # stop when all batches are stopped
+            if np.all(self.stopped):
                 break
 
+    def generation_loop_debug_normal(self):
+        raise ValueError('Unimplemented')
+
+    def generation_loop_overlap_single_batch(self):
+        raise ValueError('Unimplemented')
+
     def generation_loop_overlap_multi_batch(self):
-        # Prologue
-        for k in range(self.num_gpu_batches):
-            self.load_weight(0, 0, k)
-        self.load_hidden(0, 0, 0)
-        self.sync()
-
-        # Generate
-        for i in range(self.execute_gen_len):
-            timers("generate").start()
-            for k in range(self.num_gpu_batches):
-                self.update_attention_mask(i, k)
-            for j in range(self.num_layers):
-                for k in range(self.num_gpu_batches):
-                    self.load_weight(i, j+1, k)
-                    self.load_cache(i, j, k+1)
-                    self.store_hidden(i, j, k-1)
-                    self.load_hidden(i, j, k+1)
-                    self.compute_layer(i, j, k)
-                    self.store_cache(i, j, k-1)
-                    self.sync()
-            timers("generate").stop()
-
-        # Epilogue
-        self.store_hidden(
-            self.execute_gen_len-1, self.num_layers-1, self.num_gpu_batches-1)
+        raise ValueError('Unimplemented')
 
     def generation_loop_debug_single_batch(self):
-        # 复用 OptLM 逻辑
-        self.generation_loop_normal() # 简化起见调用 normal
+        raise ValueError('Unimplemented')
 
     def generation_loop_debug_multi_batch(self):
-        # 复用 OptLM 逻辑
-        self.generation_loop_normal() # 简化起见调用 normal
-
-    def __del__(self):
-        self.delete_all_weights()
+        raise ValueError('Unimplemented')

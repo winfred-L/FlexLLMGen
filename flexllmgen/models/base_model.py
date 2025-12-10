@@ -12,7 +12,7 @@ from flexllmgen.utils import (Task, VisionTask, ExecutionEnv, ValueHolder,
 from flexllmgen.models.base_config import BaseConfig
 from flexllmgen.policy import Policy
 
-class BaseLM(ABC):
+class BaseFlexLM(ABC):
     '''
     管理模型执行流程的基类，已经实现了以下方法：
     1. __init__

@@ -1,15 +1,19 @@
-import dataclasses
+import numpy as np
 
-@dataclasses.dataclass(frozen=True)
-class Qwen3VLConfig:
+class Qwen3VLFlexConfig:
     # --- Text Config (Main LLM) ---
-    name: str = "qwen3vl"
+    name: str = "qwen3vl-8b"
     vocab_size: int = 151936
     hidden_size: int = 4096
     num_hidden_layers: int = 36
     num_attention_heads: int = 32
     num_key_value_heads: int = 8  # GQA: KV heads count
     intermediate_size: int = 12288
+    pad_token_id: int = 151643
+    eos_token_id: tuple[int] = (151645, 151643)
+    hidden_act: str = "silu"
+    rms_norm_eps: float = 1e-06
+    # rope_scaling_mrope_section: list[int] = [24, 20, 20]
     
     # --- Vision Config ---
     vision_hidden_size: int = 1152
@@ -18,14 +22,23 @@ class Qwen3VLConfig:
     vision_patch_size: int = 16
     vision_in_chans: int = 3
     vision_temporal_patch_size: int = 2
+    
     vision_num_pos_embeddings: int = 2304
     vision_output_hidden_size: int = 4096 # Dimension after merger
-    
-    # DeepStack specifics
     deepstack_layers: int = 3 # Length of deepstack_merger_list
     
+    # --- Other Config ---
+    dtype: type = np.uint16 # <==> torch.bfloat16
     bytes_per_param: int = 2 # bfloat16
 
+    @property
+    def n_head(self) -> int:
+        return self.num_attention_heads
+    
+    @property
+    def input_dim(self) -> int:
+        return self.hidden_size
+    
     @property
     def head_dim(self) -> int:
         return self.hidden_size // self.num_attention_heads
@@ -162,8 +175,9 @@ class Qwen3VLConfig:
     
 
 def get_qwen3vl_config(name, **kwargs):
-    config = Qwen3VLConfig()
-    return dataclasses.replace(config, **kwargs)
+    # TODO: 根据模型大小设置不同参数
+    config = Qwen3VLFlexConfig()
+    return config
 
 
 if __name__ == "__main__":

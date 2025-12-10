@@ -7,9 +7,9 @@ from flexllmgen.timer import timers
 from flexllmgen.utils import Task
 from flexllmgen.models.opt_layers import InputEmbed, OutputEmbed, SelfAttention, MLP, TransformerLayer
 
-from flexllmgen.models.base_model import BaseLM
+from flexllmgen.models.base_model import BaseFlexLM
 
-class OptLM(BaseLM):
+class OptLM(BaseFlexLM):
     def get_model_config(self) -> OptConfig:
         return get_opt_config(self.name)
 
