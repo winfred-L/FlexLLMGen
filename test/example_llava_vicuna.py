@@ -38,9 +38,12 @@ def read_video_pyav(container, indices):
     return np.stack([x.to_ndarray(format="rgb24") for x in frames])
 
 
-video_path = '/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4' #28s
+# video_path = '/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4' #28s
 # video_path = "/data/lyc/datasets/Video-MME/video/zNxi2s36tS0.mp4" #43s
 # video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
+video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_game_1.mp4" #5min16s
+# video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_food_3.mp4" #6min51s
+# video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_AWB-6.mp4" #7min30s
 question = 'Please describe this video in detail.'
 conversation = [
     {
@@ -58,7 +61,7 @@ container = av.open(video_path)
 video_stream = container.streams.video[0]
 total_frames = video_stream.frames
 src_fps = float(video_stream.average_rate)
-target_fps = 1
+target_fps = 0.25 #1
 step = src_fps / target_fps
 if step < 1:
     step = 1
@@ -71,6 +74,8 @@ inputs is a dict of
     attention_mask: tensor[batch_size, seq_len]
     pixel_values_videos: tensor[batch_size, num_frames, 3, H, W]
 '''
+
+print(inputs.input_ids.shape)
 
 with torch.inference_mode():
     output_ids = model.generate(
