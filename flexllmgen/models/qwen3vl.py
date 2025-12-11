@@ -199,8 +199,8 @@ def get_rope_index(
 class Qwen3VLFlexLM(BaseFlexLM):
     '''
     Qwen3VL相较于Qwen2.5VL的改变如下：
-    1. 视觉位置编码get_rope_index()实现不同，采用时间戳而非绝对位置编码
-    2. 添加了deepstack_merger，会将视觉特征与decoder前几层的hidden state融合
+    1. 视觉位置编码采用显式的时间戳位置编码而非隐式的绝对时间位置编码，原本的时间维度索引全部为0，时间戳作为文本token在自注意力机制中被理解
+    2. 添加了deepstack_merger，会将视觉特征与decoder前几层的hidden state融合（仅prefill阶段）
     3. attention层添加了QK norm，作用在W_q与W_k之后，rotary_pos_emb之前
     '''
 
