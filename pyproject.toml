@@ -15,7 +15,8 @@ classifiers = [
 dependencies = [
     "torch>=2.9", "transformers>=4.57.3",
     "numpy", "tqdm", "pulp", "attrs",
-    "torchvision", "qwen_vl_utils"
+    "torchvision", "qwen_vl_utils", # qwen-vl
+    "protobuf", "sentencepiece" # llava
 ]
 # pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 

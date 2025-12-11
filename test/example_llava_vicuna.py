@@ -55,9 +55,14 @@ prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
 container = av.open(video_path)
 
 # sample uniformly x frames from the video, can sample more for longer videos
-sample_frame_num = 16
-total_frames = container.streams.video[0].frames
-indices = np.arange(0, total_frames, total_frames / sample_frame_num).astype(int)
+video_stream = container.streams.video[0]
+total_frames = video_stream.frames
+src_fps = float(video_stream.average_rate)
+target_fps = 1
+step = src_fps / target_fps
+if step < 1:
+    step = 1
+indices = np.arange(0, total_frames, step).astype(int)
 clip = read_video_pyav(container, indices)
 inputs = processor(text=prompt, videos=clip, padding=True, return_tensors="pt").to(model.device)
 '''

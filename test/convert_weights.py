@@ -185,6 +185,10 @@ def convert_weights_qwen3vl():
     print("转换完成！")
 
 
+def convert_weights_llava_vicuna():
+    pass
+
+
 if __name__ == "__main__":
     if MODEL_NAME == "opt-1.3b":
         convert_weights_opt()
@@ -192,5 +196,7 @@ if __name__ == "__main__":
         convert_weights_qwen25vl()
     elif MODEL_NAME == "qwen3vl-8b":
         convert_weights_qwen3vl()
+    elif MODEL_NAME == "llava-vicuna-7b":
+        convert_weights_llava_vicuna()
     else:
         raise NotImplementedError(f"Model {MODEL_NAME} not supported yet.")

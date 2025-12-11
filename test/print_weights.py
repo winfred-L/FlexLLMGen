@@ -56,7 +56,7 @@ def print_qwen3vl_weights():
         print(f"{name:<60} | {list(param.shape)}")
 
 
-def print_llava_weights():
+def print_llava_vicuna_weights():
     model = LlavaNextVideoForConditionalGeneration.from_pretrained(
         '/data/lyc/models/LLaVA-NeXT-Video-7B-hf',
         attn_implementation = 'eager',
@@ -78,4 +78,4 @@ if __name__ == "__main__":
     # print_opt_weights()
     # print_qwen25vl_weights()
     # print_qwen3vl_weights()
-    print_llava_weights()
+    print_llava_vicuna_weights()
