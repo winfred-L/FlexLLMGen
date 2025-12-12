@@ -87,7 +87,7 @@ class BaseFlexLM(ABC):
         self.weight_read_buf = array_1d(num_layers, ValueHolder)
         
         # attention_mask[k]
-        # attention_mask: 存储 Attention Mask
+        # attention_mask: 存储 Attention MaskValueHolder
         self.attention_mask = array_1d(num_gpu_batches, ValueHolder)
 
         self.task = None

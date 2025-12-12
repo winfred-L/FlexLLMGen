@@ -173,7 +173,7 @@ class Qwen2_5_VLAttention(SelfAttention):
         hidden.val = h
 
 
-class Qwen2MLP(MLP):
+class Qwen2_5_VLMLP(MLP):
     def init_weight(self, weight_home, path):
         h, mid_h, dtype = (self.config.input_dim, self.config.intermediate_size, self.config.dtype)
         path = os.path.join(os.path.join(path, f"language_model.layers.{self.layer_id}."))

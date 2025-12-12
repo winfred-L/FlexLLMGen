@@ -38,12 +38,8 @@ class Qwen25VLFlexConfig:
     @property
     def head_dim(self) -> int:
         return self.hidden_size // self.num_attention_heads
-
-    def model_bytes(self) -> int:
-        """
-        Calculates the total parameter bytes (Language Model + Vision Encoder).
-        Based on the provided print(model) structure.
-        """
+    
+    def encoder_weight_bytes(self) -> int:
         # --- 1. Vision Model Parameters ---
         # Patch Embed: Conv3d(3, 1280, k=(2,14,14))
         # Weight: out * in * k_t * k_h * k_w
@@ -86,7 +82,9 @@ class Qwen25VLFlexConfig:
         merger_params += (merger_in_dim * self.hidden_size) + self.hidden_size # Linear 2 + bias
 
         total_vision_bytes = (vision_patch_embed + total_vision_blocks + total_vision_misc + merger_params) * self.bytes_per_param
+        return total_vision_bytes
 
+    def decoder_weight_bytes(self) -> int:
         # --- 3. Language Model Parameters ---
         # Embeddings (No bias)
         lm_embed = self.vocab_size * self.hidden_size
@@ -122,8 +120,10 @@ class Qwen25VLFlexConfig:
         lm_head = self.hidden_size * self.vocab_size
 
         total_lm_bytes = (lm_embed + total_lm_layers + final_norm + lm_head) * self.bytes_per_param
+        return total_lm_bytes
 
-        return total_vision_bytes + total_lm_bytes
+    def model_bytes(self) -> int:
+        return self.encoder_weight_bytes() + self.decoder_weight_bytes()
 
     def cache_bytes(self, batch_size: int, seq_len: int) -> int:
         """

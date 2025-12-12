@@ -54,6 +54,11 @@ class OptLM(BaseFlexLM):
             timers("generate").stop()
 
     def generation_loop_debug_normal(self):
+        '''
+        只会生成一个词（prefill）。
+        如果你的模型层数超过 20 层，程序会在计算第一个生成词的中间（第20层时）强行中断。
+        设计初衷可能是为了快速测量单层计算的耗时，而不是为了生成完整的文本。
+        '''
         execute_num_batches = 20
         batch_ct = 0
         pbar = tqdm(total=execute_num_batches)

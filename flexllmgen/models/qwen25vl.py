@@ -3,6 +3,8 @@ import numpy as np
 import torch
 import os
 import gc
+from tqdm import tqdm
+from collections import defaultdict
 
 from flexllmgen.timer import timers
 from flexllmgen.utils import VisionTask
@@ -13,7 +15,7 @@ from flexllmgen.models.qwen25vl_layers import (
     Qwen2_5_VLTextInputEmbed,
     Qwen2_5_VLDecoderLayer,
     Qwen2_5_VLAttention,
-    Qwen2MLP,
+    Qwen2_5_VLMLP,
     Qwen2_5_VLOutputHead,
 )
 
@@ -278,7 +280,6 @@ class Qwen25VLFlexLM(BaseFlexLM):
     由于只关注模型decoding阶段指标（TPOT等），encoder部分的实现
     并不影响最终性能的测量。
     '''
-    attention_layer_ids: List[int] = None
     rotary_emb: Qwen2_5_VLRotaryEmbedding = None
     rope_deltas: torch.Tensor = None # [batch size, 1]
     position_embeddings: Tuple[torch.Tensor] = None # (cos, sin), each [Sections(T/H/W), Batch, Seq_Len, Head_Dim]
@@ -288,21 +289,14 @@ class Qwen25VLFlexLM(BaseFlexLM):
 
     def init_model_layers(self) -> List:
         layers = []
-        attention_layer_ids = []
         layers.append(Qwen2_5_VLTextInputEmbed(self.config, self.env, self.policy))
-        cnt = 1
         for i in range(self.config.num_hidden_layers):
             if self.policy.sep_layer:
                 layers.append(Qwen2_5_VLAttention(self.config, self.env, self.policy, i))
-                attention_layer_ids.append(cnt)
-                layers.append(Qwen2MLP(self.config, self.env, self.policy, i))
-                cnt += 2
+                layers.append(Qwen2_5_VLMLP(self.config, self.env, self.policy, i))
             else:
                 layers.append(Qwen2_5_VLDecoderLayer(self.config, self.env, self.policy, i))
-                attention_layer_ids.append(cnt)
-                cnt += 1
         layers.append(Qwen2_5_VLOutputHead(self.config, self.env, self.policy))
-        self.attention_layer_ids = attention_layer_ids
         return layers
 
     def get_task(self, inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) -> VisionTask:
@@ -323,7 +317,8 @@ class Qwen25VLFlexLM(BaseFlexLM):
 
     def compute_layer(self, i, j, k):
         # 为attention层计算额外传入position_embeddings
-        if j in self.attention_layer_ids:
+        if isinstance(self.layers[j], Qwen2_5_VLAttention) or \
+           isinstance(self.layers[j], Qwen2_5_VLDecoderLayer):
             self.layers[j].forward(
                 self.hidden[i][j][k], 
                 self.cache_read_buf[j][k],
@@ -474,14 +469,172 @@ class Qwen25VLFlexLM(BaseFlexLM):
             # import pdb; pdb.set_trace()
 
             # stop when all batches are stopped
-            if np.all(self.stopped):
+            if self.task.stop and np.all(self.stopped):
                 break
 
     def generation_loop_debug_normal(self):
-        raise ValueError('Unimplemented')
+        assert self.num_gpu_batches == 1, "Debug mode only supports single GPU batch."
+
+        # --- 1. 初始化统计容器 ---
+        # profile_data: 记录每一步(Step)的总耗时和总分解
+        profile_data = {
+            "prefill": defaultdict(list),
+            "decoding": defaultdict(list)
+        }
+        # layer_stats: 记录每一层(Layer)的详细耗时
+        # 结构: layer_stats[phase][layer_type][metric] = [cost1, cost2, ...]
+        layer_stats = {
+            "prefill": defaultdict(lambda: defaultdict(list)),
+            "decoding": defaultdict(lambda: defaultdict(list))
+        }
+        
+        # 重置计时器
+        timer_names = ["total_step", "load_weight", "load_io", "compute", "store_io", "pos_embed"]
+        for name in timer_names:
+            timers(name).reset()
+
+        print(f"Start Profiling: Gen Length = {self.execute_gen_len}, Layers = {self.num_layers}")
+
+        # --- 2. 开始循环 ---
+        for i in range(self.execute_gen_len):
+            # 确定当前阶段
+            phase = "prefill" if i == 0 else "decoding"
+
+            # 记录每一步（Step）的总耗时
+            timers("total_step").start(self.sync)
+
+            self.update_attention_mask(i, 0)
+
+            # 临时累加器，用于统计这一步(i)内所有层的总耗时
+            step_metrics = defaultdict(float)
+            
+            for j in range(self.num_layers):
+                # 判断层类型
+                if isinstance(self.layers[j], Qwen2_5_VLTextInputEmbed):
+                    layer_type = "input_embed"
+                elif isinstance(self.layers[j], Qwen2_5_VLOutputHead):
+                    layer_type = "output_head"
+                elif isinstance(self.layers[j], Qwen2_5_VLAttention):
+                    layer_type = "attention"
+                elif isinstance(self.layers[j], Qwen2_5_VLMLP):
+                    layer_type = "mlp"
+                elif isinstance(self.layers[j], Qwen2_5_VLDecoderLayer):
+                    layer_type = "decoder_layer"
+                else:
+                    raise ValueError("Unknown layer type.")
+
+                # --- Load Weight ---
+                timers("load_weight").start(self.sync)
+                if not (j == 0 and i == 0):
+                    # skip loading the first InputEmbed layer
+                    self.load_weight(i, j, 0, overlap=False)
+                timers("load_weight").stop(self.sync)
+                cost = timers("load_weight").costs[-1]
+                step_metrics["load_weight"] += cost
+                layer_stats[phase][layer_type]["load_weight"].append(cost)
+
+                # --- Load IO ---
+                timers("load_io").start(self.sync)
+                self.load_cache(i, j, 0, overlap=False)
+                self.load_hidden(i, j, 0)
+                timers("load_io").stop(self.sync)
+                cost = timers("load_io").costs[-1]
+                step_metrics["load_io"] += cost
+                layer_stats[phase][layer_type]["load_io"].append(cost)
+
+                # --- Compute ---
+                timers("compute").start(self.sync)
+                if j == 0 and i == 0:
+                    self.encoder(0)
+                else:
+                    self.compute_layer(i, j, 0)
+                timers("compute").stop(self.sync)
+                cost = timers("compute").costs[-1]
+                step_metrics["compute"] += cost
+                layer_stats[phase][layer_type]["compute"].append(cost)
+
+                # --- Store IO ---
+                timers("store_io").start(self.sync)
+                self.store_hidden(i, j, 0)
+                self.store_cache(i, j, 0, overlap=False)
+                timers("store_io").stop(self.sync)
+                cost = timers("store_io").costs[-1]
+                step_metrics["store_io"] += cost
+                layer_stats[phase][layer_type]["store_io"].append(cost)
+
+                # --- Position Embeddings ---
+                timers("pos_embed").start(self.sync)
+                if j == 0 and i != 0:
+                    inputs_embeds = self.hidden[i][j][0].val.data
+                    cur_pos_id = self.task.prompt_len + i - 1
+                    self.set_position_embeddings(inputs_embeds, cur_pos_id)
+                timers("pos_embed").stop(self.sync)
+                cost = timers("pos_embed").costs[-1]
+                step_metrics["pos_embed"] += cost
+                layer_stats[phase][layer_type]["pos_embed"].append(cost)
+                
+            # 停止 Step 计时
+            timers("total_step").stop(self.sync)
+
+            # 获取当前 Step 的总耗时
+            current_step_cost = 0.0
+            if len(timers("total_step").costs) > 0:
+                current_step_cost = timers("total_step").costs[-1]
+            timers("generate").costs.append(current_step_cost) # 兼容 main.py
+
+            # 记录数据
+            profile_data[phase]["total_step"].append(current_step_cost)
+            
+            for key, val in step_metrics.items():
+                profile_data[phase][key].append(val)
+
+            # 停止条件
+            if self.task.stop and np.all(self.stopped):
+                break
+
+        # --- 3. 输出分析报告 ---
+        self.print_profile_report(profile_data, layer_stats)
+                
+    def print_profile_report(self, profile_data, layer_stats):
+        print("\n"+"="*60+"\n"+f"{'INFERENCE PERFORMANCE REPORT':^60}\n"+"="*60)
+
+        for phase in ["prefill", "decoding"]:
+            if not profile_data[phase]["total_step"]: continue
+            
+            count = len(profile_data[phase]["total_step"])
+            avg_total = np.mean(profile_data[phase]["total_step"])
+            
+            # ===== 计算生成每词平均用时 =====
+            print(f"\nPhase: [{phase.upper()}] (Count: {count})")
+            print(f"  > Avg Latency per Step: {avg_total*1000:.2f} ms")
+            if phase == "decoding":
+                print(f"  > Throughput:           {1.0/avg_total:.2f} tokens/s")
+            
+            # ===== 计算各阶段平均用时 =====
+            print("-" * 30)
+            print("  > Global Breakdown (per Step):")
+            for key in ["load_weight", "load_io", "compute", "store_io", "pos_embed"]:
+                if len(profile_data[phase][key]) > 0:
+                    avg_comp = np.mean(profile_data[phase][key])
+                    ratio = (avg_comp / avg_total) * 100 if avg_total > 0 else 0
+                    print(f"    - {key:<12}: {avg_comp*1000:.2f} ms ({ratio:.1f}%)")
+            
+            # ===== 计算各层各阶段平均用时 =====
+            print("-" * 30)
+            print("  > Layer-wise Analysis (Avg per Single Layer Instance):")
+            for l_type in layer_stats[phase].keys():
+                print(f"    [Type: {l_type}]")
+                metrics = layer_stats[phase][l_type]
+                for metric in ["load_weight", "load_io", "compute", "store_io", "pos_embed"]:
+                    if metric in metrics and len(metrics[metric]) > 0:
+                        avg_metric = np.mean(metrics[metric])
+                        print(f"      - {metric:<12}: {avg_metric*1000:.4f} ms")
+
+        print("="*60 + "\n")    
+
 
     def generation_loop_overlap_single_batch(self):
-        raise ValueError('Unimplemented')
+        pass
 
     def generation_loop_overlap_multi_batch(self):
         raise ValueError('Unimplemented')

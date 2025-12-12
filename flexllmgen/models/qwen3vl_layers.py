@@ -5,7 +5,7 @@ from flexllmgen.models.qwen25vl_layers import (
     Qwen2_5_VLTextInputEmbed,
     Qwen2_5_VLDecoderLayer,
     Qwen2_5_VLAttention,
-    Qwen2MLP,
+    Qwen2_5_VLMLP,
     Qwen2_5_VLOutputHead,
 )
 
@@ -89,7 +89,7 @@ class Qwen3VLTextAttention(Qwen2_5_VLAttention):
         hidden.val = h
 
 
-class Qwen3VLTextMLP(Qwen2MLP):
+class Qwen3VLTextMLP(Qwen2_5_VLMLP):
     def forward(self, hidden, cache_read_buf, weight_read_buf, 
                 attention_mask, cache_write_buf, i, k,
                 visual_pos_masks, deepstack_video_embeds):
