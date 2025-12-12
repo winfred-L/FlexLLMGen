@@ -178,8 +178,7 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     for i, output in enumerate(outputs):
         show_str += f"{i}: {output}\n"
         show_str += "-" * 70 + "\n"
-    if args.verbose >= 2:
-        print(show_str)
+    print(show_str)
         
     # 8. 记录硬件性能统计
     gpu.print_stats()
