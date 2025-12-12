@@ -190,6 +190,9 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     encoder_weight_size = model_config.encoder_weight_bytes()
     decoder_weight_size = model_config.decoder_weight_bytes()
     weight_size = model_config.model_bytes()
+    print(f"model weight size: {weight_size/GB:.3f} GB")
+    print(f"  encoder weight size: {encoder_weight_size/GB:.3f} GB")
+    print(f"  decoder weight size: {decoder_weight_size/GB:.3f} GB")
 
     # TODO: 记录推理过程中实时的内存峰值
 
