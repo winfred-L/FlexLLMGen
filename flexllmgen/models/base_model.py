@@ -394,6 +394,18 @@ class BaseFlexLM(ABC):
     
 
     def print_memory_stats(self):
+
+        def format_size(size_bytes):
+            if size_bytes == 0:
+                return "0.00  B"
+            units = [" B", "KB", "MB", "GB", "TB"]
+            i = 0
+            size = float(size_bytes)
+            while size >= 1024 and i < len(units) - 1:
+                size /= 1024
+                i += 1
+            return f"{size:.2f} {units[i]}"
+        
         print("\n"+"="*60+"\n"+f"{'INFERENCE MEMORY REPORT':^60}\n"+"="*60)
         buffer_list = [
             self.weight_home,
@@ -405,7 +417,8 @@ class BaseFlexLM(ABC):
             self.hidden,
         ]
         for buffer in buffer_list:
-            print(f"{buffer.name:<30} Peak Memory: {buffer.peak_mb:>8.2f} MB")
+            formatted_size = format_size(buffer.peak_bytes)
+            print(f"{buffer.name:<30} Peak Memory: {formatted_size:>12}")
         print("="*60+"\n")
 
 

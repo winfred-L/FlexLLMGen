@@ -250,17 +250,6 @@ class MemoryStats:
         self.current_bytes = 0
         self.peak_bytes = 0
 
-    @property
-    def peak_mb(self):
-        return self.peak_bytes / MB
-    
-    @property
-    def current_mb(self):
-        return self.current_bytes / MB
-
-    def __repr__(self):
-        return f"[{self.name}] Current: {self.current_mb:.2f} MB, Peak: {self.peak_mb:.2f} MB"
-
 
 class MonitoredValueHolder:
     """
@@ -287,6 +276,10 @@ class MonitoredValueHolder:
         """计算张量或数据的字节大小"""
         if val is None:
             return 0
+        
+        # 递归处理 list 和 tuple
+        if isinstance(val, (list, tuple)):
+            return sum(self._get_size(v) for v in val)
         
         # 处理 PyTorch Tensor
         if hasattr(val, 'element_size') and hasattr(val, 'numel'):
@@ -319,15 +312,15 @@ class MonitoredValueHolder:
 
     def pop(self):
         if self._stored_bytes > 0:
-            self._stored_bytes = 0
             self.stats.update(-self._stored_bytes)
+            self._stored_bytes = 0
         val = self.holder.pop()
         return val
 
     def clear(self):
         if self._stored_bytes > 0:
-            self._stored_bytes = 0
             self.stats.update(-self._stored_bytes)
+            self._stored_bytes = 0
         self.holder.clear()
 
     # 代理所有未覆盖的属性访问 (如 .val) 到原始 holder
@@ -378,12 +371,12 @@ class MonitoredBuffer:
     # --- 将 MemoryStats 的方法暴露给容器本身 ---
     
     @property
-    def peak_mb(self):
-        return self.stats.peak_mb
+    def peak_bytes(self):
+        return self.stats.peak_bytes
     
     @property
-    def current_mb(self):
-        return self.stats.current_mb
+    def current_bytes(self):
+        return self.stats.current_bytes
 
     def reset_stats(self):
         self.stats.reset()
