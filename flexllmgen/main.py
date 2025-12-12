@@ -154,15 +154,16 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
 
         # Benchmark：执行正式的生成任务，并记录时间
         # print("benchmark - generate")
-        print("Inputs:\n" + 70 * '-' + "\n")
+        print("Inputs:\n" + 70 * '-')
         print(f"video: {video_path}")
         print(f"question: {question}")
+        print(70 * '-' + "\n")
 
         timers("generate").reset()
         with torch.inference_mode():
             output_ids = model.generate(
                 inputs,
-                max_new_tokens=args.max_gen_len,
+                max_new_tokens=args.gen_len,
                 do_sample=args.do_sample,
                 temperature=args.temperature,
                 stop=None,
@@ -226,7 +227,7 @@ def add_parser_arguments(parser):
     
     # ===== 推理设置 =====
     parser.add_argument("--cuda-device", type=str, default='cuda:0')
-    parser.add_argument("--max-gen-len", type=int, default=512)
+    parser.add_argument("--gen-len", type=int, default=512) # 生成的最大新 Token 数量
     parser.add_argument("--do-sample", type=bool, default=False)
     parser.add_argument("--temperature", type=float, default=0.000001)
     parser.add_argument("--debug-mode", type=str, default=None, choices=["fewer_batch", "breakdown"])
@@ -246,7 +247,6 @@ def add_parser_arguments(parser):
     
     # ===== 弃置设置 =====
     # parser.add_argument("--prompt-len", type=int, default=512) # 输入提示的最大长度
-    # parser.add_argument("--gen-len", type=int, default=512) # 生成的最大新 Token 数量
     # parser.add_argument("--log-file", type=str, default="auto") # 日志文件名
     # parser.add_argument("--no-log", type=bool, default=True) # 不记录日志
     # parser.add_argument("--verbose", type=int, default=2) # 控制输出信息的详细程度

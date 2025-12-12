@@ -160,11 +160,16 @@ def cpu_mem_stats():
             continue
         visited_data.add(data_ptr)
 
-        numel = tensor.numel()
+        numel = tensor.storage().nbytes() # tensor.numel()
         total_numel += numel
         element_size = tensor.storage().element_size()
         mem = numel * element_size
         total_mem += mem
+        '''
+        以上原始实现中，如果有一个较大的tensor A，以及一个较小的切片B=A[0:1]，
+        两个tensor A和B共享同一块内存区域。循环先遍历到B时，B.numel()只统计到
+        较小部分，而完整的存储空间在后遍历到A时会跳过，存在BUG。
+        '''
 
     return total_mem
 
@@ -185,7 +190,7 @@ def torch_mem_stats():
 
         print(tensor.shape, tensor.data_ptr())
 
-        numel = tensor.numel()
+        numel = tensor.storage().nbytes() # tensor.numel()
         total_numel += numel
         element_size = tensor.storage().element_size()
         mem = numel * element_size
@@ -225,6 +230,167 @@ def array_3d(a, b, c, cls):
 
 def array_4d(a, b, c, d, cls):
     return [[[[cls() for _ in range(d)] for _ in range(c)] for _ in range(b)] for _ in range(a)]
+
+
+
+class MemoryStats:
+    """用于记录内存使用的统计板"""
+    def __init__(self, name: str):
+        self.name = name
+        self.current_bytes = 0
+        self.peak_bytes = 0
+
+    def update(self, delta_bytes: int):
+        # 通过传入负值，可以记录当前内存使用量的减少
+        self.current_bytes += delta_bytes
+        if self.current_bytes > self.peak_bytes:
+            self.peak_bytes = self.current_bytes
+
+    def reset(self):
+        self.current_bytes = 0
+        self.peak_bytes = 0
+
+    @property
+    def peak_mb(self):
+        return self.peak_bytes / MB
+    
+    @property
+    def current_mb(self):
+        return self.current_bytes / MB
+
+    def __repr__(self):
+        return f"[{self.name}] Current: {self.current_mb:.2f} MB, Peak: {self.peak_mb:.2f} MB"
+
+
+class MonitoredValueHolder:
+    """
+    ValueHolder 的装饰器/代理类。
+    在 store/pop 数据时自动向 MemoryStats 汇报内存变化。
+    """
+    def __init__(self, stats: MemoryStats):
+        self.holder = ValueHolder()
+        self.stats = stats
+        self._stored_bytes = 0
+
+    @property
+    def val(self):
+        return self.holder.val
+    
+    @val.setter
+    def val(self, new_value):
+        # 写操作：拦截赋值，强制走 store 逻辑进行计费
+        if self._stored_bytes > 0:
+            self.clear()
+        self.store(new_value)
+
+    def _get_size(self, val):
+        """计算张量或数据的字节大小"""
+        if val is None:
+            return 0
+        
+        # 处理 PyTorch Tensor
+        if hasattr(val, 'element_size') and hasattr(val, 'numel'):
+            return val.element_size() * val.numel()
+        
+        # 处理 Numpy Array
+        if hasattr(val, 'nbytes'):
+            return val.nbytes
+            
+        # 处理自定义 Tensor 包装类 (假设有 bytes 属性或 shape/dtype)
+        # 这里需要根据 flexllmgen 实际的 Tensor 类进行适配
+        if hasattr(val, 'bytes'): 
+            return val.bytes
+        if hasattr(val, 'shape') and hasattr(val, 'dtype'):
+            # 简单的兜底估算
+            try:
+                dtype_size = val.dtype.itemsize
+                return np.prod(val.shape) * dtype_size
+            except:
+                pass
+                
+        # 如果无法计算，为了不报错，打印警告并返回0
+        # print(f"Warning: Could not calculate size for {type(val)}")
+        return 0
+
+    def store(self, val):
+        self._stored_bytes = self._get_size(val)
+        self.stats.update(self._stored_bytes)
+        self.holder.store(val)
+
+    def pop(self):
+        if self._stored_bytes > 0:
+            self._stored_bytes = 0
+            self.stats.update(-self._stored_bytes)
+        val = self.holder.pop()
+        return val
+
+    def clear(self):
+        if self._stored_bytes > 0:
+            self._stored_bytes = 0
+            self.stats.update(-self._stored_bytes)
+        self.holder.clear()
+
+    # 代理所有未覆盖的属性访问 (如 .val) 到原始 holder
+    def __getattr__(self, name):
+        return getattr(self.holder, name)
+    
+    def __setattr__(self, name, value):
+        # 避免无限递归，处理自身属性
+        if name in ['holder', 'stats', '_stored_bytes']:
+            super().__setattr__(name, value)
+        elif name == 'val': 
+            # 如果直接设置 .val (如 update_attention_mask 中)，也需要尝试追踪
+            # 但通常不建议直接设置 .val，这里做个简单代理
+            self.holder.val = value
+            # 注意：直接设置 val 很难追踪 size 变化，建议尽量用 store
+        else:
+            setattr(self.holder, name, value)
+
+
+class MonitoredBuffer:
+    """
+    能够记录内存使用变化的缓冲区容器，用于替代array_2d等函数创建的多维列表
+    """
+    def __init__(self, shape: tuple, name: str):
+        self.name = name
+        self.stats = MemoryStats(name)
+        self.shape = shape
+        self.ndim = len(shape)
+        
+        # 递归构建多维列表，且所有元素共享同一个 self.stats
+        self._data = self._build_recursive(shape, self.stats)
+
+    def _build_recursive(self, shape, stats):
+        if len(shape) == 1:
+            # 最后一维，创建实际的 MonitoredValueHolder
+            return [MonitoredValueHolder(stats) for _ in range(shape[0])]
+        else:
+            # 递归创建下一维
+            return [self._build_recursive(shape[1:], stats) for _ in range(shape[0])]
+
+    def __getitem__(self, index):
+        """支持索引操作 self.cache_home[i]"""
+        return self._data[index]
+
+    def __len__(self):
+        return self.shape[0]
+
+    # --- 将 MemoryStats 的方法暴露给容器本身 ---
+    
+    @property
+    def peak_mb(self):
+        return self.stats.peak_mb
+    
+    @property
+    def current_mb(self):
+        return self.stats.current_mb
+
+    def reset_stats(self):
+        self.stats.reset()
+
+    def __repr__(self):
+        return str(self.stats)
+
 
 
 def vector_gather(vectors, indices):

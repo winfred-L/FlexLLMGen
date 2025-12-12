@@ -7,8 +7,7 @@ import os
 from transformers.feature_extraction_utils import BatchFeature
 
 from flexllmgen.timer import timers
-from flexllmgen.utils import (Task, VisionTask, ExecutionEnv, ValueHolder,
-    array_1d, array_2d, array_3d)
+from flexllmgen.utils import (Task, VisionTask, ExecutionEnv, MonitoredBuffer, ValueHolder)
 from flexllmgen.models.base_config import BaseConfig
 from flexllmgen.policy import Policy
 
@@ -45,11 +44,11 @@ class BaseFlexLM(ABC):
         self.name = name
         self.env = env
         self.policy = policy
-        self.config = self.get_model_config()
+        self.config = self.get_model_config() # abstractmethod
         self.num_gpu_batches = policy.num_gpu_batches
 
         # --- 初始化网络层 ---
-        self.layers = self.init_model_layers()
+        self.layers = self.init_model_layers() # abstractmethod
         self.num_layers = len(self.layers)
 
         # --- 确定激活值(Activation)的存储位置 ---
@@ -76,19 +75,34 @@ class BaseFlexLM(ABC):
         
         # cache[j][k]
         # cache_home: 存储所有层、所有 batch 的完整 KV Cache
-        self.cache_home = array_2d(num_layers, num_gpu_batches, ValueHolder) # ValueHolder 是一个占位符，用于引用实际的 Tensor 数据
+        self.cache_home = MonitoredBuffer(
+            shape=(num_layers, num_gpu_batches),
+            name="cache_home",
+        )
         # cache_read_buf: 当前计算需要的 KV Cache（通常在 GPU 上）
-        self.cache_read_buf = array_2d(num_layers, num_gpu_batches, ValueHolder)
+        self.cache_read_buf = MonitoredBuffer(
+            shape=(num_layers, num_gpu_batches),
+            name="cache_read_buf",
+        )
         # cache_write_buf: 计算产生的新 KV Cache，等待写回
-        self.cache_write_buf = array_2d(num_layers, num_gpu_batches, ValueHolder)
+        self.cache_write_buf = MonitoredBuffer(
+            shape=(num_layers, num_gpu_batches),
+            name="cache_write_buf",
+        )
 
         # weight[j]
         # weight_read_buf: 当前计算层需要的权重（预取到 GPU）
-        self.weight_read_buf = array_1d(num_layers, ValueHolder)
+        self.weight_read_buf = MonitoredBuffer(
+            shape=(num_layers,),
+            name="weight_read_buf",
+        )
         
         # attention_mask[k]
-        # attention_mask: 存储 Attention MaskValueHolder
-        self.attention_mask = array_1d(num_gpu_batches, ValueHolder)
+        # attention_mask: 存储 Attention Mask
+        self.attention_mask = MonitoredBuffer(
+            shape=(num_gpu_batches,),
+            name="attention_mask",
+        )
 
         self.task = None
         self.weight_file_path = os.path.abspath(os.path.expanduser(
@@ -100,7 +114,10 @@ class BaseFlexLM(ABC):
 
     # --- Weight 管理 ---
     def init_all_weights(self):
-        self.weight_home = array_1d(self.num_layers, ValueHolder)
+        self.weight_home = MonitoredBuffer(
+            shape=(self.num_layers,),
+            name="weight_home",
+        )
         for j in range(self.num_layers):
             self.init_weight(j)
 
@@ -304,7 +321,7 @@ class BaseFlexLM(ABC):
                  cut_gen_len: Optional[int] = None,
                  verbose: int = 0):
 
-        task = self.get_task(inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop)
+        task = self.get_task(inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) # abstractmethod
         self.set_task(task)
 
         # Output token ids
@@ -327,7 +344,10 @@ class BaseFlexLM(ABC):
             self.weight_read_buf[j].clear()
         for k in range(num_gpu_batches):
             self.attention_mask[k].clear()
-        self.hidden = array_3d(gen_len, num_layers, num_gpu_batches, ValueHolder)
+        self.hidden = MonitoredBuffer(
+            shape=(gen_len, num_layers, num_gpu_batches),
+            name="hidden",
+        )
         
         # Init cache
         for j in range(num_layers):
@@ -341,22 +361,22 @@ class BaseFlexLM(ABC):
         if debug_mode is None:
             if not self.policy.overlap:
                 # No overlap, easy to understand, suitable for debugging
-                self.generation_loop_normal()
+                self.generation_loop_normal() # abstractmethod
             else:
                 # Overlap I/O and compute
                 if num_gpu_batches == 1:
-                    self.generation_loop_overlap_single_batch()
+                    self.generation_loop_overlap_single_batch() # abstractmethod
                 else:
-                    self.generation_loop_overlap_multi_batch()
+                    self.generation_loop_overlap_multi_batch() # abstractmethod
         elif debug_mode == "fewer_batch":
             # Run fewer layeres and batches for debugging
             if num_gpu_batches == 1:
-                self.generation_loop_debug_single_batch()
+                self.generation_loop_debug_single_batch() # abstractmethod
             else:
-                self.generation_loop_debug_multi_batch()
+                self.generation_loop_debug_multi_batch() # abstractmethod
         elif debug_mode == "breakdown":
             # No overlap, fewer batches, execution time breakdown
-            self.generation_loop_debug_normal()
+            self.generation_loop_debug_normal() # abstractmethod
         else:
             raise ValueError("Invalid debug mode: {debug_mode}")
 
@@ -367,7 +387,27 @@ class BaseFlexLM(ABC):
         if self.policy.cpu_cache_compute:
             self.env.cpu.del_attention_compute_workspace()
 
+        # print memory stats
+        self.print_memory_stats()
+
         return self.output_ids
+    
+
+    def print_memory_stats(self):
+        print("\n"+"="*60+"\n"+f"{'INFERENCE MEMORY REPORT':^60}\n"+"="*60)
+        buffer_list = [
+            self.weight_home,
+            self.weight_read_buf,
+            self.attention_mask,
+            self.cache_home,
+            self.cache_read_buf,
+            self.cache_write_buf,
+            self.hidden,
+        ]
+        for buffer in buffer_list:
+            print(f"{buffer.name:<30} Peak Memory: {buffer.peak_mb:>8.2f} MB")
+        print("="*60+"\n")
+
 
     @abstractmethod
     def get_model_config(self) -> BaseConfig:
