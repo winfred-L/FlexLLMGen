@@ -263,15 +263,29 @@ if __name__ == "__main__":
     args = parser.parse_args()
     assert len(args.percent) == 6
 
-    # args.model = "opt-1.3b"
     args.model = "qwen25vl-7b"
     # args.model = "qwen3vl-8b"
 
+    args.percent = [100, 0, 0, 100, 100, 0] # all cache to cpu
+
+
+    # generation_loop_normal()
+    # default
+
+    # generation_loop_debug_normal()
     args.debug_mode = 'breakdown'
+
+    # generation_loop_overlap_single_batch()
+    # args.overlap = True
+
 
     video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
     # video_path = "/data/lyc/datasets/Video-MME/video/zNxi2s36tS0.mp4" #43s
     # video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
+    # video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_game_1.mp4" #5min16s
+    # video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_food_3.mp4" #6min51s
+    # video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_AWB-6.mp4" #7min30s
+    
     question = "Please describe this video in detail."
 
     # 项目入口

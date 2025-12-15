@@ -634,7 +634,35 @@ class Qwen25VLFlexLM(BaseFlexLM):
 
 
     def generation_loop_overlap_single_batch(self):
-        pass
+        # # Prologue
+        # for k in range(self.num_gpu_batches):
+        #     self.load_weight(0, 0, k) # skip loading the first InputEmbed layer
+        # self.sync()
+
+        # Generate
+        for i in range(self.execute_gen_len):
+            timers("generate").start()
+            self.update_attention_mask(i, 0)
+            for j in range(self.num_layers):
+                self.load_weight(i, j+1, 0)
+                self.load_cache(i, j+1, 0)
+                self.load_hidden(i, j, 0)
+                if j == 0 and i == 0: # replace the first InputEmbed layer with visual encoder
+                    self.encoder(0)
+                else:
+                    self.compute_layer(i, j, 0)
+                self.store_cache(i, j-1, 0)
+                self.store_hidden(i, j, 0)
+                if j == 0 and i != 0:
+                    inputs_embeds = self.hidden[i][j][0].val.data
+                    cur_pos_id = self.task.prompt_len + i - 1
+                    self.set_position_embeddings(inputs_embeds, cur_pos_id)
+                self.sync()
+                
+            timers("generate").stop()
+
+            if self.task.stop and np.all(self.stopped):
+                break
 
     def generation_loop_overlap_multi_batch(self):
         raise ValueError('Unimplemented')

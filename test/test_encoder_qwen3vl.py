@@ -81,7 +81,7 @@ processor = AutoProcessor.from_pretrained("/data/lyc/models/Qwen3-VL-8B-Instruct
 
 
 video_fps = 1.0
-video_path = '/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4'
+video_path = '/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4'  # 28s # 3.01MB
 question = 'Please describe this video in detail.'
 messages = [
     {
@@ -112,7 +112,7 @@ import pdb; pdb.set_trace()
 <class 'transformers.feature_extraction_utils.BatchFeature'>
 input_ids: tensor, torch.Size([1, 11597])
 attention_mask: tensor, torch.Size([1, 11597])
-pixel_values_videos: tensor, torch.Size([45360, 1536])
+pixel_values_videos: tensor, torch.Size([45360, 1536])  torch.float32  0.26 GB
     # 45360(patch count) = 28*30*54 (video_grid_thw)
     # 1536(patch size) = 2(time) * 16(height) * 16(width) * 3(channels)
     # "temporal_patch_size": 2
