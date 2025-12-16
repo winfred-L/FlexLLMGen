@@ -432,7 +432,7 @@ class Qwen25VLFlexLM(BaseFlexLM):
 
 
     def generation_loop_normal(self):
-        for i in range(self.execute_gen_len):
+        for i in tqdm(range(self.execute_gen_len)):
             timers("generate").start()
             for k in range(self.num_gpu_batches):
                 self.update_attention_mask(i, k)
@@ -498,7 +498,7 @@ class Qwen25VLFlexLM(BaseFlexLM):
         print(f"Start Profiling: Gen Length = {self.execute_gen_len}, Layers = {self.num_layers}")
 
         # --- 2. 开始循环 ---
-        for i in range(self.execute_gen_len):
+        for i in tqdm(range(self.execute_gen_len)):
             # 临时累加器，用于统计这一步(i)内所有层的总耗时
             step_metrics = {
                 "encoding": defaultdict(float),
@@ -651,7 +651,7 @@ class Qwen25VLFlexLM(BaseFlexLM):
         # self.sync()
 
         # Generate
-        for i in range(self.execute_gen_len):
+        for i in tqdm(range(self.execute_gen_len)):
             timers("generate").start()
             self.update_attention_mask(i, 0)
             for j in range(self.num_layers):
@@ -701,7 +701,7 @@ class Qwen25VLFlexLM(BaseFlexLM):
         print(f"Start Profiling: Gen Length = {self.execute_gen_len}, Layers = {self.num_layers}")
 
         # --- 2. 开始循环 ---
-        for i in range(self.execute_gen_len):
+        for i in tqdm(range(self.execute_gen_len)):
             # 临时累加器，用于统计这一步(i)内所有层的总耗时
             step_metrics = {
                 "encoding": defaultdict(float),

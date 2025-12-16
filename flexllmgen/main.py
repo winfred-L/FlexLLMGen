@@ -269,6 +269,7 @@ if __name__ == "__main__":
     args.model = "qwen3vl-8b"
 
     # args.percent = [100, 0, 0, 100, 100, 0] # all cache to cpu
+    # args.percent = [100, 0, 0, 0, 100, 0] # all cache to disk
 
 
     ''' inference mode:
