@@ -13,11 +13,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-# from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
-def flash_attn_varlen_func(*args, **kwargs):
-    pass
-def flash_attn_with_kvcache(*args, **kwargs):
-    pass
+from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
 
 from flexllmgen.utils import (GB, T, cpu_mem_stats, vector_gather,
     np_dtype_to_torch_dtype, torch_dtype_to_np_dtype,
@@ -532,6 +528,8 @@ class TorchDevice:
         """Grouped-Query Attention (prefill phase)."""
         assert not compress_cache, "GQA compress cache in generation is not implemented yet."
 
+        # inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v, w_out, w_ln: all TorchTensor
+
         b, s, h = inputs.shape
         head_dim = h // n_head
         scaling = head_dim ** -0.5
@@ -569,30 +567,21 @@ class TorchDevice:
         save_k = k.clone()
         save_v = v.clone()
 
-        attention_mask = attention_mask.data
-        if attention_mask.dim() == 4:
-            mask_2d = attention_mask.view(b, s)
-        else:
-            mask_2d = attention_mask
-
-        print(attention_mask.data.shape)
-        import pdb; pdb.set_trace()
-
-        # 计算每个序列的真实长度
-        seqlens = mask_2d.sum(dim=-1, dtype=torch.int32)
+        # attention_mask.data shape: (b, s), bool, True for keep
+        # sum up True, get valid sequence lengths
+        seqlens = attention_mask.data.sum(dim=-1, dtype=torch.int32)
         
-        # 构建 cu_seqlens: [0, len1, len1+len2, ...]
+        # set cu_seqlens: [0, len1, len1+len2, ...]
         cu_seqlens = torch.cat(
             [torch.tensor([0], device=q.device, dtype=torch.int32), 
             seqlens.cumsum(dim=0, dtype=torch.int32)])
 
         max_seqlen = int(seqlens.max().item())
 
-        # Unpad: 移除 padding token，压扁成 (total_valid_tokens, n, d)
-        valid_mask = mask_2d.bool()
-        q_unpad = q[valid_mask]
-        k_unpad = k[valid_mask]
-        v_unpad = v[valid_mask]
+        # Unpad: remove padding token，get (total_valid_tokens, n, d)
+        q_unpad = q[attention_mask.data]
+        k_unpad = k[attention_mask.data]
+        v_unpad = v[attention_mask.data]
 
         attn_output_unpad = flash_attn_varlen_func(
             q=q_unpad,
@@ -607,7 +596,7 @@ class TorchDevice:
             causal=True,
         )
         output = torch.zeros_like(q)
-        output[valid_mask] = attn_output_unpad
+        output[attention_mask.data] = attn_output_unpad
 
         # (b, s, n_head, d) -> (b, s, h)
         output = output.reshape(b, s, h)
@@ -626,22 +615,19 @@ class TorchDevice:
 
         return TorchTensor.create_from_torch(output, self), save_k, save_v
 
+    """
+    qwen3vl相较qwen25vl在gqa实现上区别：
+    1. 去掉了b_q, b_k, b_v, 添加了q_ln, k_ln参数
+    2. 加入位置编码时不需要rope_scaling_mrope_section
+    """
     def qwen3vl_gqa(self, inputs, attention_mask, w_q, w_k, w_v,
             w_out, q_ln, k_ln, w_ln, n_head, n_kv_head, donate, compress_cache, comp_config,
             rms_norm_eps, position_embeddings):
         """Grouped-Query Attention (prefill phase)."""
         assert not compress_cache, "GQA compress cache in generation is not implemented yet."
-        
-        # decompress weights
-        if w_q.device.device_type == DeviceType.COMPRESSED:
-            w_q = w_q.device.decompress(w_q)
-            w_k = w_k.device.decompress(w_k)
-            w_v = w_v.device.decompress(w_v)
-            w_out = w_out.device.decompress(w_out)
 
         b, s, h = inputs.shape
         head_dim = h // n_head
-        group_size = n_head // n_kv_head
         scaling = head_dim ** -0.5
 
         hidden = self.rms_norm(inputs.data, weight=w_ln.data, eps=rms_norm_eps)
@@ -663,10 +649,9 @@ class TorchDevice:
         k = self.rms_norm(k, weight=k_ln.data, eps=rms_norm_eps)
 
         # shape: (b, n_head, s, head_dim)
-        q = q.permute(0, 2, 1, 3)
+        q = q.transpose(1, 2)
         # shape: (b, n_kv_head, s, head_dim)
-        k = k.permute(0, 2, 1, 3)
-        v = v.permute(0, 2, 1, 3)
+        k = k.transpose(1, 2)
 
         # do rotary position embedding
         cos, sin = position_embeddings
@@ -674,55 +659,61 @@ class TorchDevice:
             q, k, cos, sin
         )
 
+        # shape: (b, s, n_head, head_dim)
+        q = q.transpose(1, 2)
+        # shape: (b, s, n_kv_head, head_dim)
+        k = k.transpose(1, 2)
+
         save_k = k.clone()
         save_v = v.clone()
 
-        # shape: (b, n_kv_head, group_size, s, head_dim)
-        q = q.view(b, n_kv_head, group_size, s, head_dim)
-        # shape: (b, n_kv_head, 1, head_dim, s)
-        k = k.unsqueeze(2).transpose(-1, -2)
-        # shape: (b, n_kv_head, 1, s, head_dim)
-        v = v.unsqueeze(2)
-
-        # Attention Score (Broadcasting happens on dim 2)
-        # (b, n_kv_head, group, s, d) @ (b, n_kv_head, 1, d, s)
-        # -> (b, n_kv_head, group, s, s)
-        attn_weights = torch.matmul(q, k) * scaling
-
-        # shape: (b, 1, s, s)
-        idx = torch.arange(s, device=self.dev)
-        causal_mask = (idx <= idx.view(s, 1)).view(1, 1, s, s)
-        # 要求 attention_mask 必须是 布尔型 (Boolean/Byte) 或者 0/1 整数型，且 1/True 代表保留，0/False 代表遮蔽。
-        mask = attention_mask.data.view(b, 1, 1, s) & causal_mask
-
-        # shape: (b, n_head, s, s)
-        attn_weights = attn_weights.view(b, n_head, s, s)
-        attn_weights = torch.where(mask, attn_weights, float('-inf'))
-        attn_weights = attn_weights.view(b * n_head, s, s)
-        attn_weights = F.softmax(attn_weights, dim=2, dtype=torch.float32).to(inputs.dtype)
-        # shape: (b, n_kv_head, group_size, s, s)
-        attn_weights = attn_weights.view(b, n_kv_head, group_size, s, s)
+        # attention_mask.data shape: (b, s), bool, True for keep
+        # sum up True, get valid sequence lengths
+        seqlens = attention_mask.data.sum(dim=-1, dtype=torch.int32)
         
-        # (b, n_kv_head, group, s, s) @ (b, n_kv_head, 1, s, d)
-        # -> (b, n_kv_head, group, s, d)
-        value = torch.matmul(attn_weights, v).view(b, n_head, s, head_dim)
-        # shape: (b, s, h)
-        value = value.transpose(1, 2).reshape(b, s, h)
-        value = F.linear(value, w_out.data, bias=None)
+        # set cu_seqlens: [0, len1, len1+len2, ...]
+        cu_seqlens = torch.cat(
+            [torch.tensor([0], device=q.device, dtype=torch.int32), 
+            seqlens.cumsum(dim=0, dtype=torch.int32)])
 
-        value.add_(inputs.data)
+        max_seqlen = int(seqlens.max().item())
+
+        # Unpad: remove padding token，get (total_valid_tokens, n, d)
+        q_unpad = q[attention_mask.data]
+        k_unpad = k[attention_mask.data]
+        v_unpad = v[attention_mask.data]
+
+        attn_output_unpad = flash_attn_varlen_func(
+            q=q_unpad,
+            k=k_unpad,
+            v=v_unpad,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            dropout_p=0.0,
+            softmax_scale=scaling,
+            causal=True,
+        )
+        output = torch.zeros_like(q)
+        output[attention_mask.data] = attn_output_unpad
+
+        # (b, s, n_head, d) -> (b, s, h)
+        output = output.reshape(b, s, h)
+        output = F.linear(output, w_out.data, bias=None)
+        output.add_(inputs.data)
 
         if donate[0]: inputs.delete()
         if donate[1]: attention_mask.delete()
 
-        # (b, n_kv_head, s, head_dim) -> (s, b * n_kv_head, head_dim)
-        save_k = save_k.permute(2, 0, 1, 3).reshape(s, b * n_kv_head, head_dim)
-        save_v = save_v.permute(2, 0, 1, 3).reshape(s, b * n_kv_head, head_dim)
+        # (b, s, n_kv_head, head_dim) -> (s, b * n_kv_head, head_dim)
+        save_k = save_k.permute(1, 0, 2, 3).reshape(s, b * n_kv_head, head_dim)
+        save_v = save_v.permute(1, 0, 2, 3).reshape(s, b * n_kv_head, head_dim)
 
         save_k = TorchTensor.create_from_torch(save_k, self)
         save_v = TorchTensor.create_from_torch(save_v, self)
 
-        return TorchTensor.create_from_torch(value, self), save_k, save_v
+        return TorchTensor.create_from_torch(output, self), save_k, save_v
 
     def qwen25vl_gqa_gen(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
                 w_out, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
@@ -734,7 +725,6 @@ class TorchDevice:
         assert isinstance(k_cache, TorchTensor), "GQA mixed device attention is not implemented yet."
 
         b, tgt_s, h = inputs.shape
-        src_s = attention_mask.shape[1]
         head_dim = h // n_head
         scaling = head_dim ** -0.5
 
@@ -743,33 +733,33 @@ class TorchDevice:
         # shape: (b, 1, h)
         q = F.linear(hidden, w_q.data, bias=b_q.data)
         # shape: (b, 1, h // n_head * n_kv_head)
-        k_new = F.linear(hidden, w_k.data, bias=b_k.data)
-        v_new = F.linear(hidden, w_v.data, bias=b_v.data)
+        k = F.linear(hidden, w_k.data, bias=b_k.data)
+        v = F.linear(hidden, w_v.data, bias=b_v.data)
 
         # shape: (b, 1, n_head, head_dim)
         q = q.view(b, tgt_s, n_head, head_dim)
         # shape: (b, 1, n_kv_head, head_dim)
-        k_new = k_new.view(b, tgt_s, n_kv_head, head_dim)
-        v_new = v_new.view(b, tgt_s, n_kv_head, head_dim)
+        k = k.view(b, tgt_s, n_kv_head, head_dim)
+        v = v.view(b, tgt_s, n_kv_head, head_dim)
 
         # shape: (b, n_head, 1, head_dim)
         q = q.transpose(1, 2)
         # shape: (b, n_kv_head, 1, head_dim)
-        k_new = k_new.transpose(1, 2)
+        k = k.transpose(1, 2)
         
         # do rotary position embedding
         cos, sin = position_embeddings
-        q, k_new = self._qwen25vl_apply_rotary_pos_emb(
-            q, k_new, cos, sin, rope_scaling_mrope_section
+        q, k = self._qwen25vl_apply_rotary_pos_emb(
+            q, k, cos, sin, rope_scaling_mrope_section
         )
 
         # shape: (b, 1, n_head, head_dim)
         q = q.transpose(1, 2)
         # shape: (b, 1, n_kv_head, head_dim)
-        k_new = k_new.transpose(1, 2)
+        k = k.transpose(1, 2)
 
-        save_k_new = k_new.clone()
-        save_v_new = v_new.clone()
+        save_k = k.clone()
+        save_v = v.clone()
 
         # k_cache shape: (max_seq, b * n_kv_head, head_dim)
         max_seq_len = k_cache.data.shape[0]
@@ -785,8 +775,8 @@ class TorchDevice:
             q=q,
             k_cache=k_cache_view,
             v_cache=v_cache_view,
-            k=k_new,
-            v=v_new,
+            k=k,
+            v=v,
             cache_seqlens=cache_seqlens,
             softmax_scale=scaling,
             causal=True,
@@ -801,14 +791,14 @@ class TorchDevice:
         if donate[1]: attention_mask.delete()
 
         # (b, 1, n_kv_head, head_dim) -> (1, b * n_kv_head, head_dim)
-        save_k_new = save_k_new.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
+        save_k = save_k.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
         # (b, 1, n_kv_head, head_dim) -> (1, b * n_kv_head, head_dim)
-        save_v_new = save_v_new.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
+        save_v = save_v.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
 
-        save_k_new = TorchTensor.create_from_torch(save_k_new, self)
-        save_v_new = TorchTensor.create_from_torch(save_v_new, self)
+        save_k = TorchTensor.create_from_torch(save_k, self)
+        save_v = TorchTensor.create_from_torch(save_v, self)
 
-        return TorchTensor.create_from_torch(output, self), save_k_new, save_v_new
+        return TorchTensor.create_from_torch(output, self), save_k, save_v
 
     def qwen3vl_gqa_gen(self, inputs, attention_mask, w_q, w_k, w_v,
                 w_out, q_ln, k_ln, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
@@ -819,17 +809,8 @@ class TorchDevice:
         assert attn_sparsity >= 1.0, "GQA sparse attention in generation is not implemented yet."
         assert isinstance(k_cache, TorchTensor), "GQA mixed device attention is not implemented yet."
 
-        # decompress weights
-        if w_q.device.device_type == DeviceType.COMPRESSED:
-            w_q = w_q.device.decompress(w_q)
-            w_k = w_k.device.decompress(w_k)
-            w_v = w_v.device.decompress(w_v)
-            w_out = w_out.device.decompress(w_out)
-
         b, tgt_s, h = inputs.shape
-        src_s = attention_mask.shape[1]
         head_dim = h // n_head
-        group_size = n_head // n_kv_head
         scaling = head_dim ** -0.5
 
         hidden = self.rms_norm(inputs.data, weight=w_ln.data, eps=rms_norm_eps)
@@ -837,86 +818,76 @@ class TorchDevice:
         # shape: (b, 1, h)
         q = F.linear(hidden, w_q.data, bias=None)
         # shape: (b, 1, h // n_head * n_kv_head)
-        k_new = F.linear(hidden, w_k.data, bias=None)
-        v_new = F.linear(hidden, w_v.data, bias=None)
+        k = F.linear(hidden, w_k.data, bias=None)
+        v = F.linear(hidden, w_v.data, bias=None)
 
         # shape: (b, 1, n_head, head_dim)
         q = q.view(b, tgt_s, n_head, head_dim)
         # shape: (b, 1, n_kv_head, head_dim)
-        k_new = k_new.view(b, tgt_s, n_kv_head, head_dim)
-        v_new = v_new.view(b, tgt_s, n_kv_head, head_dim)
+        k = k.view(b, tgt_s, n_kv_head, head_dim)
+        v = v.view(b, tgt_s, n_kv_head, head_dim)
 
         # qk norm
         q = self.rms_norm(q, weight=q_ln.data, eps=rms_norm_eps)
-        k_new = self.rms_norm(k_new, weight=k_ln.data, eps=rms_norm_eps)
+        k = self.rms_norm(k, weight=k_ln.data, eps=rms_norm_eps)
 
         # shape: (b, n_head, 1, head_dim)
-        q = q.permute(0, 2, 1, 3)
+        q = q.transpose(1, 2)
         # shape: (b, n_kv_head, 1, head_dim)
-        k_new = k_new.permute(0, 2, 1, 3)
+        k = k.transpose(1, 2)
         
         # do rotary position embedding
         cos, sin = position_embeddings
-        q, k_new = self._qwen3vl_apply_rotary_pos_emb(
-            q, k_new, cos, sin
+        q, k = self._qwen3vl_apply_rotary_pos_emb(
+            q, k, cos, sin
+        )
+        
+        # shape: (b, 1, n_head, head_dim)
+        q = q.transpose(1, 2)
+        # shape: (b, 1, n_kv_head, head_dim)
+        k = k.transpose(1, 2)
+
+        save_k = k.clone()
+        save_v = v.clone()
+
+        # k_cache shape: (max_seq, b * n_kv_head, head_dim)
+        max_seq_len = k_cache.data.shape[0]
+        # (S, B*N, D) -> (S, B, N, D) -> (B, S, N, D)
+        k_cache_view = k_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
+        v_cache_view = v_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
+
+        seqlens = attention_mask.data.sum(dim=1, dtype=torch.int32)
+        # cache_seqlens 指示 "写入位置的索引"，对于长度为 L 的序列，新 Token 写在下标 L-1 处
+        cache_seqlens = seqlens - 1
+
+        attn_output = flash_attn_with_kvcache(
+            q=q,
+            k_cache=k_cache_view,
+            v_cache=v_cache_view,
+            k=k,
+            v=v,
+            cache_seqlens=cache_seqlens,
+            softmax_scale=scaling,
+            causal=True,
         )
 
-        save_k_new = k_new.clone()
-        save_v_new = v_new.clone()
-
-        # shape: (s, b * n_kv_head, head_dim)
-        k = k_cache.data[:src_s]
-        v = v_cache.data[:src_s]
-        # shape: (1, b * n_kv_head, head_dim)
-        k_new = k_new.permute(2, 0, 1, 3).reshape(tgt_s, b * n_kv_head, head_dim)
-        v_new = v_new.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
-        k[src_s - 1:src_s] = k_new
-        v[src_s - 1:src_s] = v_new
-
-        # shape: (b, n_kv_head, group_size, 1, head_dim)
-        q = q.view(b, n_kv_head, group_size, tgt_s, head_dim)
-        # shape: (b, n_kv_head, 1, head_dim, src_s)
-        k = k.permute(1, 2, 0).reshape(b, n_kv_head, head_dim, src_s).unsqueeze(2)
-        # shape: (b, n_kv_head, 1, src_s, head_dim)
-        v = v.permute(1, 0, 2).reshape(b, n_kv_head, src_s, head_dim).unsqueeze(2)
-
-        # Attention Score (Broadcasting happens on dim 2)
-        # (b, n_kv_head, group, 1, d) @ (b, n_kv_head, 1, d, s)
-        # -> (b, n_kv_head, group, 1, s)
-        attn_weights = torch.matmul(q, k) * scaling
-
-        # shape: (b, 1, 1, s)
-        mask = attention_mask.data.view(b, 1, 1, src_s)
-        # shape: (b * n_head, 1, s)
-        attn_weights = attn_weights.view(b, n_head, 1, src_s)
-        attn_weights = torch.where(mask, attn_weights, float('-inf'))
-        attn_weights = attn_weights.view(b * n_head, 1, src_s)
-        attn_weights = F.softmax(attn_weights, dim=2, dtype=torch.float32).to(inputs.dtype)
-        # shape: (b, n_kv_head, group_size, 1, s)
-        attn_weights = attn_weights.view(b, n_kv_head, group_size, tgt_s, src_s)
-
-        # (b, n_kv_head, group, 1, s) @ (b, n_kv_head, 1, s, d)
-        # -> (b, n_kv_head, group, 1, d)
-        value = torch.matmul(attn_weights, v).view(b, n_head, tgt_s, head_dim)
-
-        # shape: (b, 1, h)
-        value = value.transpose(1, 2).reshape(b, tgt_s, h)
-        value = F.linear(value, w_out.data, bias=None)
-
-        value.add_(inputs.data)
+        # (b, 1, n, d) -> (b, 1, h)
+        output = attn_output.reshape(b, tgt_s, h)
+        output = F.linear(output, w_out.data, bias=None)
+        output.add_(inputs.data)
 
         if donate[0]: inputs.delete()
         if donate[1]: attention_mask.delete()
 
-        # (b, n_kv_head, 1, head_dim) -> (1, b * n_kv_head, head_dim)
-        save_k_new = save_k_new.permute(2, 0, 1, 3).reshape(tgt_s, b * n_kv_head, head_dim)
         # (b, 1, n_kv_head, head_dim) -> (1, b * n_kv_head, head_dim)
-        save_v_new = save_v_new.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
+        save_k = save_k.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
+        # (b, 1, n_kv_head, head_dim) -> (1, b * n_kv_head, head_dim)
+        save_v = save_v.permute(1, 0, 2, 3).reshape(tgt_s, b * n_kv_head, head_dim)
 
-        save_k_new = TorchTensor.create_from_torch(save_k_new, self)
-        save_v_new = TorchTensor.create_from_torch(save_v_new, self)
+        save_k = TorchTensor.create_from_torch(save_k, self)
+        save_v = TorchTensor.create_from_torch(save_v, self)
 
-        return TorchTensor.create_from_torch(value, self), save_k_new, save_v_new
+        return TorchTensor.create_from_torch(output, self), save_k, save_v
 
     def _rotate_half(self, x):
         """Rotates half the hidden dims of the input."""

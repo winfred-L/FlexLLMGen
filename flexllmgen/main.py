@@ -263,6 +263,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     assert len(args.percent) == 6
 
+    args.cuda_device = "cuda:1"
+
     # args.model = "qwen25vl-7b"
     args.model = "qwen3vl-8b"
 
@@ -276,7 +278,7 @@ if __name__ == "__main__":
     | args.overlap = True  | generation_loop_overlap_single_batch() | generation_loop_debug_overlap_single_batch() |
     '''
     args.debug_mode = 'breakdown'
-    # args.overlap = True
+    args.overlap = True
 
 
     video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
