@@ -263,7 +263,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     assert len(args.percent) == 6
 
-    args.cuda_device = "cuda:1"
+    # args.cuda_device = "cuda:1"
 
     # args.model = "qwen25vl-7b"
     args.model = "qwen3vl-8b"

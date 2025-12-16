@@ -316,9 +316,10 @@ class TorchDevice:
         if donate[0]: inputs.delete()
 
         # output embedding
-        logits = F.linear(hidden, w_token.data)
-        last_token_logits = logits[:,-1,:]
-
+        last_token_hidden = hidden[:, -1:, :]
+        last_token_logits = F.linear(last_token_hidden, w_token.data)
+        last_token_logits = last_token_logits.squeeze(1)
+        
         #if do_sample and not temperature < 1e-5:
         if do_sample:
             probs = torch.softmax(last_token_logits / temperature, dim=-1)
@@ -841,7 +842,7 @@ class TorchDevice:
         q, k = self._qwen3vl_apply_rotary_pos_emb(
             q, k, cos, sin
         )
-        
+
         # shape: (b, 1, n_head, head_dim)
         q = q.transpose(1, 2)
         # shape: (b, 1, n_kv_head, head_dim)
