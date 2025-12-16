@@ -602,13 +602,15 @@ class Qwen25VLFlexLM(BaseFlexLM):
             if not profile_data[phase]["total_step"]: continue
             
             count = len(profile_data[phase]["total_step"])
+            sum_total = np.sum(profile_data[phase]["total_step"])
             avg_total = np.mean(profile_data[phase]["total_step"])
             
             # ===== 计算生成每词平均用时 =====
             print(f"\nPhase: [{phase.upper()}] (Count: {count})")
+            print(f"  > Total Latency       : {sum_total*1000:.2f} ms")
             print(f"  > Avg Latency per Step: {avg_total*1000:.2f} ms")
             if phase == "decoding":
-                print(f"  > Throughput:           {1.0/avg_total:.2f} tokens/s")
+                print(f"  > Throughput          : {1.0/avg_total:.2f} tokens/s")
             
             # ===== 计算各阶段平均用时 =====
             print("-" * 30)

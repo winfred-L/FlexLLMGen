@@ -269,18 +269,14 @@ if __name__ == "__main__":
     # args.percent = [100, 0, 0, 100, 100, 0] # all cache to cpu
 
 
-    # generation_loop_normal()
-    # default
-
-    # generation_loop_debug_normal()
-    # args.debug_mode = 'breakdown'
-
-    # generation_loop_overlap_single_batch()
-    # args.overlap = True
-
-    # generation_loop_debug_overlap_single_batch()
+    ''' inference mode:
+    |                      | args.debug_mode = None                 | args.debug_mode = 'breakdown'                |
+    | -------------------- | -------------------------------------- | -------------------------------------------- |
+    | args.overlap = False | generation_loop_normal()               | generation_loop_debug_normal()               |
+    | args.overlap = True  | generation_loop_overlap_single_batch() | generation_loop_debug_overlap_single_batch() |
+    '''
     args.debug_mode = 'breakdown'
-    args.overlap = True
+    # args.overlap = True
 
 
     video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
