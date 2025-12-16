@@ -3,6 +3,8 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 
 import argparse
+import sys
+from datetime import datetime
 
 import torch
 from transformers import AutoProcessor
@@ -255,6 +257,13 @@ def add_parser_arguments(parser):
     # parser.add_argument("--verbose", type=int, default=2) # 控制输出信息的详细程度
     
 
+def print_args(args):
+    # 格式化打印主要参数
+    print(f"\n{'=' * 20} Configuration {'=' * 20}")
+    for arg, value in vars(args).items():
+        print(f"{arg:<20}: {value}")
+    print(f"{'=' * 55}\n")
+
 
 if __name__ == "__main__":
     # 参数设置
@@ -290,6 +299,14 @@ if __name__ == "__main__":
     # video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_AWB-6.mp4" #7min30s
     
     question = "Please describe this video in detail."
+
+    # 重定向print()到log文件
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_file = f'./logs/{args.model}-{timestamp}.txt'
+    sys.stdout = open(output_file, 'w', encoding='utf-8')
+
+    # 打印参数设置
+    print_args(args)
 
     # 项目入口
     if args.model == 'qwen25vl-7b':
