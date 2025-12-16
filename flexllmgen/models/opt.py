@@ -277,3 +277,8 @@ class OptLM(BaseFlexLM):
             else:
                 timers("generate").costs.append(self.num_layers * batch_cost)
 
+    def generation_loop_debug_overlap_single_batch(self):
+        raise ValueError('Unimplemented')
+
+    def generation_loop_debug_overlap_multi_batch(self):
+        raise ValueError('Unimplemented')

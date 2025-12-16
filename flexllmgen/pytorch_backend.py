@@ -13,7 +13,11 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
+# from flash_attn import flash_attn_varlen_func, flash_attn_with_kvcache
+def flash_attn_varlen_func(*args, **kwargs):
+    pass
+def flash_attn_with_kvcache(*args, **kwargs):
+    pass
 
 from flexllmgen.utils import (GB, T, cpu_mem_stats, vector_gather,
     np_dtype_to_torch_dtype, torch_dtype_to_np_dtype,
@@ -565,10 +569,14 @@ class TorchDevice:
         save_k = k.clone()
         save_v = v.clone()
 
+        attention_mask = attention_mask.data
         if attention_mask.dim() == 4:
             mask_2d = attention_mask.view(b, s)
         else:
             mask_2d = attention_mask
+
+        print(attention_mask.data.shape)
+        import pdb; pdb.set_trace()
 
         # 计算每个序列的真实长度
         seqlens = mask_2d.sum(dim=-1, dtype=torch.int32)

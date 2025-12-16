@@ -375,8 +375,15 @@ class BaseFlexLM(ABC):
             else:
                 self.generation_loop_debug_multi_batch() # abstractmethod
         elif debug_mode == "breakdown":
-            # No overlap, fewer batches, execution time breakdown
-            self.generation_loop_debug_normal() # abstractmethod
+            if not self.policy.overlap:
+                # No overlap, fewer batches, execution time breakdown
+                self.generation_loop_debug_normal() # abstractmethod
+            else:
+                # Overlap I/O and compute
+                if num_gpu_batches == 1:
+                    self.generation_loop_debug_overlap_single_batch() # abstractmethod
+                else:
+                    self.generation_loop_debug_overlap_multi_batch() # abstractmethod
         else:
             raise ValueError("Invalid debug mode: {debug_mode}")
 
@@ -456,4 +463,12 @@ class BaseFlexLM(ABC):
 
     @abstractmethod
     def generation_loop_debug_multi_batch(self):
+        pass
+
+    @abstractmethod
+    def generation_loop_debug_overlap_single_batch(self):
+        pass
+
+    @abstractmethod
+    def generation_loop_debug_overlap_multi_batch(self):
         pass

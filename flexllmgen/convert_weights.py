@@ -9,8 +9,8 @@ from safetensors.torch import load_file
 
 # 配置你的路径
 # MODEL_NAME = "opt-1.3b"
-# MODEL_NAME = "qwen25vl-7b"
-MODEL_NAME = "qwen3vl-8b"
+MODEL_NAME = "qwen25vl-7b"
+# MODEL_NAME = "qwen3vl-8b"
 
 # 你下载的原始模型路径 (ModelScope 下载路径)
 # SOURCE_PATH = "/data/lyc/models/opt-1.3b"

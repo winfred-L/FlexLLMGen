@@ -3,18 +3,19 @@ import numpy as np
 import torch
 import os
 import gc
+from collections import defaultdict
 
 from flexllmgen.timer import timers
 from flexllmgen.utils import VisionTask
 from flexllmgen.pytorch_backend import TorchTensor
-from flexllmgen.models.base_model import BaseFlexLM
+from flexllmgen.models.qwen25vl import Qwen25VLFlexLM
 from flexllmgen.models.qwen3vl_config import Qwen3VLFlexConfig, get_qwen3vl_config
 from flexllmgen.models.qwen3vl_layers import (
-    Qwen3VLTextInputEmbed,
-    Qwen3VLTextAttention,
-    Qwen3VLTextMLP,
-    Qwen3VLTextDecoderLayer,
-    Qwen3VLOutputHead,
+    Qwen3VLTextInputEmbed as TextInputEmbed,
+    Qwen3VLTextAttention as TextAttention,
+    Qwen3VLTextMLP as TextMLP,
+    Qwen3VLTextDecoderLayer as TextDecoderLayer,
+    Qwen3VLOutputHead as OutputHead,
 )
 
 from transformers import AutoConfig
@@ -196,20 +197,23 @@ def get_rope_index(
 
 
 
-class Qwen3VLFlexLM(BaseFlexLM):
+class Qwen3VLFlexLM(Qwen25VLFlexLM):
     '''
     Qwen3VL相较于Qwen2.5VL的改变如下：
     1. 视觉位置编码采用显式的时间戳位置编码而非隐式的绝对时间位置编码，原本的时间维度索引全部为0，时间戳作为文本token在自注意力机制中被理解
     2. 添加了deepstack_merger，会将视觉特征与decoder前几层的hidden state融合（仅prefill阶段）
     3. attention层添加了QK norm，作用在W_q与W_k之后，rotary_pos_emb之前
-    '''
 
-    attention_layer_ids: List[int] = None
-    mlp_layer_ids: List[int] = None
+    generation_loop_normal(), generation_loop_debug_normal() 等方法
+    继承自Qwen25VLFlexLM，无需修改
+    '''
 
     rotary_emb: Qwen3VLTextRotaryEmbedding = None
     rope_deltas: torch.Tensor = None # [batch size, 1]
     position_embeddings: Tuple[torch.Tensor] = None # (cos, sin), each [Sections(T/H/W), Batch, Seq_Len, Head_Dim]
+
+    # used for deepstack merger
+    mlp_layer_ids: List[int] = None
 
     # args for deepstack merger
     visual_pos_masks: torch.Tensor = None # shape: [batch_size, visual_seqlen]
@@ -219,54 +223,32 @@ class Qwen3VLFlexLM(BaseFlexLM):
     def get_model_config(self) -> Qwen3VLFlexConfig:
         return get_qwen3vl_config(self.name)
     
-
     def init_model_layers(self) -> List:
         layers = []
-        attention_layer_ids = []
         mlp_layer_ids = []
-        layers.append(Qwen3VLTextInputEmbed(self.config, self.env, self.policy))
+        layers.append(TextInputEmbed(self.config, self.env, self.policy))
         cnt = 1
         for i in range(self.config.num_hidden_layers):
             if self.policy.sep_layer:
-                layers.append(Qwen3VLTextAttention(self.config, self.env, self.policy, i))
-                attention_layer_ids.append(cnt)
-                layers.append(Qwen3VLTextMLP(self.config, self.env, self.policy, i))
-                mlp_layer_ids.append(cnt + 1)
-                cnt += 2
-            else:
-                layers.append(Qwen3VLTextDecoderLayer(self.config, self.env, self.policy, i))
-                attention_layer_ids.append(cnt)
+                layers.append(TextAttention(self.config, self.env, self.policy, i))
+                cnt += 1
+                layers.append(TextMLP(self.config, self.env, self.policy, i))
                 mlp_layer_ids.append(cnt)
                 cnt += 1
-        layers.append(Qwen3VLOutputHead(self.config, self.env, self.policy))
-        self.attention_layer_ids = attention_layer_ids
+            else:
+                layers.append(TextDecoderLayer(self.config, self.env, self.policy, i))
+                mlp_layer_ids.append(cnt)
+                cnt += 1
+        layers.append(OutputHead(self.config, self.env, self.policy))
         self.mlp_layer_ids = mlp_layer_ids
         return layers
-    
-
-    def get_task(self, inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) -> VisionTask:
-        return VisionTask(
-            input_ids=np.array(inputs.input_ids),
-            prompt_len=inputs.input_ids.shape[1],
-            gen_len=max_new_tokens,
-            cut_gen_len=cut_gen_len,
-            do_sample=do_sample,
-            temperature=temperature,
-            stop=self.config.eos_token_id if stop is None else stop,
-
-            attention_mask=inputs.attention_mask,
-            pixel_values_videos=inputs.pixel_values_videos,
-            video_grid_thw=inputs.video_grid_thw,
-            second_per_grid_ts=None, # qwen3vl没有这个参数
-        )
-    
 
     def compute_layer(self, i, j, k):
         '''
         为attention层计算额外传入position_embeddings
         为mlp层计算额外传入visual_pos_masks, deepstack_video_embeds
         '''
-        if j in self.attention_layer_ids and j in self.mlp_layer_ids:
+        if isinstance(self.layers[j], TextDecoderLayer):
             # no sep layer case
             self.layers[j].forward(
                 self.hidden[i][j][k], 
@@ -279,7 +261,7 @@ class Qwen3VLFlexLM(BaseFlexLM):
                 self.visual_pos_masks,
                 self.deepstack_video_embeds,
             )
-        elif j in self.attention_layer_ids:
+        elif isinstance(self.layers[j], TextAttention):
             self.layers[j].forward(
                 self.hidden[i][j][k], 
                 self.cache_read_buf[j][k],
@@ -289,7 +271,7 @@ class Qwen3VLFlexLM(BaseFlexLM):
                 i, k,
                 self.position_embeddings,
             )
-        elif j in self.mlp_layer_ids:
+        elif isinstance(self.layers[j], TextMLP):
             # add visual features to the hidden states of first several decoder layers (only prefill)
             mlp_layer_index = self.mlp_layer_ids.index(j)
             if i == 0 and mlp_layer_index in range(len(self.deepstack_video_embeds)):
@@ -431,60 +413,3 @@ class Qwen3VLFlexLM(BaseFlexLM):
         position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
 
         self.position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
-
-
-    def generation_loop_normal(self):
-        for i in range(self.execute_gen_len):
-            timers("generate").start()
-            for k in range(self.num_gpu_batches):
-                self.update_attention_mask(i, k)
-            for j in range(self.num_layers):
-                # print(f'i={i}, j={j}')
-                for k in range(self.num_gpu_batches):
-                    if j == 0 and i == 0:
-                        pass # skip loading the first InputEmbed layer
-                    else:
-                        self.load_weight(i, j, k, overlap=False)
-
-                for k in range(self.num_gpu_batches):
-                    self.load_cache(i, j, k, overlap=False)
-                    self.load_hidden(i, j, k)
-                    if j == 0 and i == 0: # replace the first InputEmbed layer with visual encoder
-                        self.encoder(k)
-                    else:
-                        self.compute_layer(i, j, k)
-                    
-                    self.store_hidden(i, j, k)
-                    self.store_cache(i, j, k, overlap=False)
-                    
-                    # set position embeddings to be shared across all attention layers
-                    # do after input embedding layer, before all attention layers
-                    # Note: when (j == 0 and i == 0), set position embeddings is done in encoder()
-                    if j == 0 and i != 0:
-                        inputs_embeds = self.hidden[i][j][k].val.data
-                        cur_pos_id = self.task.prompt_len + i - 1
-                        self.set_position_embeddings(inputs_embeds, cur_pos_id)
-            
-            timers("generate").stop()
-
-            # print(f'i={i}, output_ids={self.output_ids[0, self.task.prompt_len + i]}')
-            # import pdb; pdb.set_trace()
-
-            # stop when all batches are stopped
-            if np.all(self.stopped):
-                break
-
-    def generation_loop_debug_normal(self):
-        raise ValueError('Unimplemented')
-
-    def generation_loop_overlap_single_batch(self):
-        raise ValueError('Unimplemented')
-
-    def generation_loop_overlap_multi_batch(self):
-        raise ValueError('Unimplemented')
-
-    def generation_loop_debug_single_batch(self):
-        raise ValueError('Unimplemented')
-
-    def generation_loop_debug_multi_batch(self):
-        raise ValueError('Unimplemented')

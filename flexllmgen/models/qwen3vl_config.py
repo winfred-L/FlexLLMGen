@@ -43,11 +43,7 @@ class Qwen3VLFlexConfig:
     def head_dim(self) -> int:
         return self.hidden_size // self.num_attention_heads
 
-    def model_bytes(self) -> int:
-        """
-        Calculates total parameter bytes.
-        Adapts to Qwen3-VL specifics: Vision MLP change, DeepStack, QK-Norms.
-        """
+    def encoder_weight_bytes(self) -> int:
         # ==========================================
         # 1. Vision Model (Qwen3VLVisionModel)
         # ==========================================
@@ -114,6 +110,9 @@ class Qwen3VLFlexConfig:
 
         total_vision_bytes = (vision_embed_params + total_vision_blocks + merger_params + total_deepstack) * self.bytes_per_param
 
+        return total_vision_bytes
+
+    def decoder_weight_bytes(self) -> int:
         # ==========================================
         # 2. Text Model (Qwen3VLTextModel)
         # ==========================================
@@ -157,7 +156,10 @@ class Qwen3VLFlexConfig:
 
         total_lm_bytes = (lm_embed + total_lm_layers + final_norm + lm_head) * self.bytes_per_param
 
-        return total_vision_bytes + total_lm_bytes
+        return total_lm_bytes
+
+    def model_bytes(self) -> int:
+        return self.encoder_weight_bytes() + self.decoder_weight_bytes()
 
     def cache_bytes(self, batch_size: int, seq_len: int) -> int:
         """

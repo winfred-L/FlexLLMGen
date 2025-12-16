@@ -12,11 +12,11 @@ from flexllmgen.pytorch_backend import TorchTensor
 from flexllmgen.models.base_model import BaseFlexLM
 from flexllmgen.models.qwen25vl_config import Qwen25VLFlexConfig, get_qwen25vl_config
 from flexllmgen.models.qwen25vl_layers import (
-    Qwen2_5_VLTextInputEmbed,
-    Qwen2_5_VLDecoderLayer,
-    Qwen2_5_VLAttention,
-    Qwen2_5_VLMLP,
-    Qwen2_5_VLOutputHead,
+    Qwen2_5_VLTextInputEmbed as TextInputEmbed,
+    Qwen2_5_VLDecoderLayer as TextDecoderLayer,
+    Qwen2_5_VLAttention as TextAttention,
+    Qwen2_5_VLMLP as TextMLP,
+    Qwen2_5_VLOutputHead as OutputHead,
 )
 
 from transformers import AutoConfig
@@ -289,14 +289,14 @@ class Qwen25VLFlexLM(BaseFlexLM):
 
     def init_model_layers(self) -> List:
         layers = []
-        layers.append(Qwen2_5_VLTextInputEmbed(self.config, self.env, self.policy))
+        layers.append(TextInputEmbed(self.config, self.env, self.policy))
         for i in range(self.config.num_hidden_layers):
             if self.policy.sep_layer:
-                layers.append(Qwen2_5_VLAttention(self.config, self.env, self.policy, i))
-                layers.append(Qwen2_5_VLMLP(self.config, self.env, self.policy, i))
+                layers.append(TextAttention(self.config, self.env, self.policy, i))
+                layers.append(TextMLP(self.config, self.env, self.policy, i))
             else:
-                layers.append(Qwen2_5_VLDecoderLayer(self.config, self.env, self.policy, i))
-        layers.append(Qwen2_5_VLOutputHead(self.config, self.env, self.policy))
+                layers.append(TextDecoderLayer(self.config, self.env, self.policy, i))
+        layers.append(OutputHead(self.config, self.env, self.policy))
         return layers
 
     def get_task(self, inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) -> VisionTask:
@@ -312,13 +312,13 @@ class Qwen25VLFlexLM(BaseFlexLM):
             attention_mask=inputs.attention_mask,
             pixel_values_videos=inputs.pixel_values_videos,
             video_grid_thw=inputs.video_grid_thw,
-            second_per_grid_ts=inputs.second_per_grid_ts,
+            second_per_grid_ts=inputs.second_per_grid_ts if hasattr(inputs, 'second_per_grid_ts') else None, # qwen3vl没有这个参数
         )
 
     def compute_layer(self, i, j, k):
         # 为attention层计算额外传入position_embeddings
-        if isinstance(self.layers[j], Qwen2_5_VLAttention) or \
-           isinstance(self.layers[j], Qwen2_5_VLDecoderLayer):
+        if isinstance(self.layers[j], TextAttention) or \
+           isinstance(self.layers[j], TextDecoderLayer):
             self.layers[j].forward(
                 self.hidden[i][j][k], 
                 self.cache_read_buf[j][k],
@@ -500,25 +500,25 @@ class Qwen25VLFlexLM(BaseFlexLM):
             # 确定当前阶段
             phase = "prefill" if i == 0 else "decoding"
 
+            # 临时累加器，用于统计这一步(i)内所有层的总耗时
+            step_metrics = defaultdict(float)
+
             # 记录每一步（Step）的总耗时
             timers("total_step").start(self.sync)
 
             self.update_attention_mask(i, 0)
-
-            # 临时累加器，用于统计这一步(i)内所有层的总耗时
-            step_metrics = defaultdict(float)
             
             for j in range(self.num_layers):
                 # 判断层类型
-                if isinstance(self.layers[j], Qwen2_5_VLTextInputEmbed):
+                if isinstance(self.layers[j], TextInputEmbed):
                     layer_type = "input_embed"
-                elif isinstance(self.layers[j], Qwen2_5_VLOutputHead):
+                elif isinstance(self.layers[j], OutputHead):
                     layer_type = "output_head"
-                elif isinstance(self.layers[j], Qwen2_5_VLAttention):
+                elif isinstance(self.layers[j], TextAttention):
                     layer_type = "attention"
-                elif isinstance(self.layers[j], Qwen2_5_VLMLP):
+                elif isinstance(self.layers[j], TextMLP):
                     layer_type = "mlp"
-                elif isinstance(self.layers[j], Qwen2_5_VLDecoderLayer):
+                elif isinstance(self.layers[j], TextDecoderLayer):
                     layer_type = "decoder_layer"
                 else:
                     raise ValueError("Unknown layer type.")
@@ -664,12 +664,139 @@ class Qwen25VLFlexLM(BaseFlexLM):
             if self.task.stop and np.all(self.stopped):
                 break
 
+    def generation_loop_debug_overlap_single_batch(self):
+        assert self.num_gpu_batches == 1, "Debug mode only supports single GPU batch."
+
+        # --- 1. 初始化统计容器 ---
+        # profile_data: 记录每一步(Step)的总耗时和总分解
+        profile_data = {
+            "prefill": defaultdict(list),
+            "decoding": defaultdict(list)
+        }
+        # layer_stats: 记录每一层(Layer)的详细耗时
+        # 结构: layer_stats[phase][layer_type][metric] = [cost1, cost2, ...]
+        layer_stats = {
+            "prefill": defaultdict(lambda: defaultdict(list)),
+            "decoding": defaultdict(lambda: defaultdict(list))
+        }
+        
+        # 重置计时器
+        timer_names = ["total_step", "load_weight", "load_io", "compute", "store_io", "pos_embed"]
+        for name in timer_names:
+            timers(name).reset()
+
+        print(f"Start Profiling: Gen Length = {self.execute_gen_len}, Layers = {self.num_layers}")
+
+        # --- 2. 开始循环 ---
+        for i in range(self.execute_gen_len):
+            # 确定当前阶段
+            phase = "prefill" if i == 0 else "decoding"
+
+            # 临时累加器，用于统计这一步(i)内所有层的总耗时
+            step_metrics = defaultdict(float)
+
+            # 记录每一步（Step）的总耗时
+            timers("total_step").start(self.sync)
+
+            self.update_attention_mask(i, 0)
+            
+            for j in range(self.num_layers):
+                # 判断层类型
+                if isinstance(self.layers[j], TextInputEmbed):
+                    layer_type = "input_embed"
+                elif isinstance(self.layers[j], OutputHead):
+                    layer_type = "output_head"
+                elif isinstance(self.layers[j], TextAttention):
+                    layer_type = "attention"
+                elif isinstance(self.layers[j], TextMLP):
+                    layer_type = "mlp"
+                elif isinstance(self.layers[j], TextDecoderLayer):
+                    layer_type = "decoder_layer"
+                else:
+                    raise ValueError("Unknown layer type.")
+
+                # --- Load Weight ---
+                timers("load_weight").start(self.sync)
+                self.load_weight(i, j+1, 0)
+                timers("load_weight").stop(self.sync)
+                cost = timers("load_weight").costs[-1]
+                step_metrics["load_weight"] += cost
+                layer_stats[phase][layer_type]["load_weight"].append(cost)
+
+                # --- Load IO ---
+                timers("load_io").start(self.sync)
+                self.load_cache(i, j+1, 0)
+                self.load_hidden(i, j, 0)
+                timers("load_io").stop(self.sync)
+                cost = timers("load_io").costs[-1]
+                step_metrics["load_io"] += cost
+                layer_stats[phase][layer_type]["load_io"].append(cost)
+
+                # --- Compute ---
+                timers("compute").start(self.sync)
+                if j == 0 and i == 0:
+                    self.encoder(0)
+                else:
+                    self.compute_layer(i, j, 0)
+                timers("compute").stop(self.sync)
+                cost = timers("compute").costs[-1]
+                step_metrics["compute"] += cost
+                layer_stats[phase][layer_type]["compute"].append(cost)
+
+                # --- Store IO ---
+                timers("store_io").start(self.sync)
+                self.store_cache(i, j-1, 0)
+                self.store_hidden(i, j, 0)
+                timers("store_io").stop(self.sync)
+                cost = timers("store_io").costs[-1]
+                step_metrics["store_io"] += cost
+                layer_stats[phase][layer_type]["store_io"].append(cost)
+
+                # --- Position Embeddings ---
+                timers("pos_embed").start(self.sync)
+                if j == 0 and i != 0:
+                    inputs_embeds = self.hidden[i][j][0].val.data
+                    cur_pos_id = self.task.prompt_len + i - 1
+                    self.set_position_embeddings(inputs_embeds, cur_pos_id)
+                timers("pos_embed").stop(self.sync)
+                cost = timers("pos_embed").costs[-1]
+                step_metrics["pos_embed"] += cost
+                layer_stats[phase][layer_type]["pos_embed"].append(cost)
+
+                self.sync()
+                
+            # 停止 Step 计时
+            timers("total_step").stop(self.sync)
+
+            # 获取当前 Step 的总耗时
+            current_step_cost = 0.0
+            if len(timers("total_step").costs) > 0:
+                current_step_cost = timers("total_step").costs[-1]
+            timers("generate").costs.append(current_step_cost) # 兼容 main.py
+
+            # 记录数据
+            profile_data[phase]["total_step"].append(current_step_cost)
+            
+            for key, val in step_metrics.items():
+                profile_data[phase][key].append(val)
+
+            # 停止条件
+            if self.task.stop and np.all(self.stopped):
+                break
+
+        # --- 3. 输出分析报告 ---
+        self.print_profile_report(profile_data, layer_stats)
+
+    
+    def generation_loop_debug_single_batch(self):
+        raise ValueError('Unimplemented')
+    
     def generation_loop_overlap_multi_batch(self):
         raise ValueError('Unimplemented')
 
-    def generation_loop_debug_single_batch(self):
-        raise ValueError('Unimplemented')
-
     def generation_loop_debug_multi_batch(self):
+        raise ValueError('Unimplemented')
+    
+    def generation_loop_debug_overlap_multi_batch(self):
         raise ValueError('Unimplemented')
 
