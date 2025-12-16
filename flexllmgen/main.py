@@ -273,7 +273,7 @@ if __name__ == "__main__":
     # default
 
     # generation_loop_debug_normal()
-    args.debug_mode = 'breakdown'
+    # args.debug_mode = 'breakdown'
 
     # generation_loop_overlap_single_batch()
     # args.overlap = True

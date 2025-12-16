@@ -22,7 +22,10 @@ processor = AutoProcessor.from_pretrained(model_path, max_pixels=max_pixels, min
 # prepare input
 # video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
 # video_path = "/data/lyc/datasets/Video-MME/video/zNxi2s36tS0.mp4" #43s
-video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
+# video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
+video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_game_1.mp4" #5min16s
+# video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_food_3.mp4" #6min51s
+# video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_AWB-6.mp4" #7min30s
 question = 'Please describe this video in detail.'
 video_fps = 1.0
 messages = [
