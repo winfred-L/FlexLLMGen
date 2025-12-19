@@ -690,15 +690,16 @@ class Qwen25VLFlexLM(BaseFlexLM):
             timers("generate").start()
             self.update_attention_mask(i, 0)
             for j in range(self.num_layers):
-                if self.policy.do_sparse and \
-                    i != 0 and \
-                    (j+1) in self.attention_layer_ids and \
-                    self.attention_layer_ids.index(j+1) > 0:
-                    # do sparsity kv selection for attention layers except the first one
-                    self.selective_load_cache(i, j+1, 0)
-                else:
-                    self.load_cache(i, j+1, 0)
+                # if self.policy.do_sparse and \
+                #     i != 0 and \
+                #     (j+1) in self.attention_layer_ids and \
+                #     self.attention_layer_ids.index(j+1) > 0:
+                #     # do sparsity kv selection for attention layers except the first one
+                #     self.selective_load_cache(i, j+1, 0)
+                # else:
+                #     self.load_cache(i, j+1, 0)
                 self.load_weight(i, j+1, 0)
+                self.load_cache(i, j+1, 0)
                 self.load_hidden(i, j, 0)
                 if j == 0 and i == 0: # replace the first InputEmbed layer with visual encoder
                     self.encoder(0)

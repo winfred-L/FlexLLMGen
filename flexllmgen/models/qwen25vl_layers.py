@@ -7,7 +7,7 @@ import os
 
 from flexllmgen.policy import init_weight_list
 from flexllmgen.models.opt_layers import InputEmbed, OutputEmbed, SelfAttention, MLP, TransformerLayer
-from flexllmgen.pytorch_backend import DeviceType
+from flexllmgen.pytorch_backend import DeviceType, general_copy
 
 
 class Qwen2_5_VLTextInputEmbed(InputEmbed):
@@ -153,43 +153,47 @@ class Qwen2_5_VLAttention(SelfAttention):
             device = device.compressed_device
 
         if self.policy.do_sparse:
-            cache = device.init_page_cache_one_gpu_batch(self.config, self.task, self.policy)
+            # (text_k_cache, video_k_cache, reduced_video_k_cache, text_v_cache, video_v_cache)
+            cache = device.init_sparse_cache_one_gpu_batch(self.config, self.task, self.policy)
         else:
+            # (k_cache, v_cache)
             cache = device.init_cache_one_gpu_batch(self.config, self.task, self.policy)
         
         cache_home.store(cache)
 
-    def selective_load_cache(self, cache_home, cache_read_buf, i, attention_mask, prev_hidden):
-        # TODO
-        pass
+    def load_cache(self, cache_home, cache_read_buf, i):
+        if i == 0:  # prefill, no cache
+            return
 
-        # text_k_home, video_k_home, reduced_video_k_home, text_v_home, video_v_home = cache_home.val
-        # # cache shape: (s, b * n_kv_head, head_dim)
-        # bn_size = text_k_home.shape[1]
-        # dst = self.env.gpu # 目前为了方便代码书写，固定kv select在GPU上做
+        k_home, v_home = cache_home.val
+        dst = self.attention_compute
 
-        # # get text_cache_K
-        # indices = (slice(0, self.task.prompt_len - self.task.video_len + i),
-        #            slice(0, bn_size))
-        # text_k = text_k_home.smart_copy(dst, indices)
-        # text_v = text_v_home.smart_copy(dst, indices)
+        # shape: (s, b * n_head, head_dim)
+        indices = (slice(0, self.task.prompt_len + i),
+                   slice(0, k_home.shape[1]))
+        cache_read_buf.store((
+            k_home.smart_copy(dst, indices),
+            v_home.smart_copy(dst, indices),
+        ))
+         
+    def store_cache(self, cache_home, cache_write_buf, i):
+        # shape: (s, b * n_head, head_dim)
+        k_home, v_home = cache_home.val
+        k_new, v_new = cache_write_buf.pop()
 
-        # # get reduced_video_cache_K
-        # indices = (slice(0, self.task.reduced_video_len),
-        #            slice(0, bn_size))
-        # reduced_video_k = reduced_video_k_home.smart_copy(dst, indices)
+        if i == self.task.gen_len - 1:  # last token, no need to store cache
+            return
 
-        # # judge important video tokens
+        if i == 0:  # prefill
+            indices = (slice(0, k_new.shape[0]),
+                       slice(0, k_new.shape[1]))
+        else:  # decoding
+            pos = self.task.prompt_len + i
+            indices = (slice(pos - k_new.shape[0], pos),
+                       slice(0, k_new.shape[1]))
 
-        # # copy result cache to GPU
-        # indices = (slice(0, self.task.prompt_len + i),
-        #            slice(0, bn_size))
-        # cache_read_buf.store((
-        #     k_home.smart_copy(dst, indices),
-        #     v_home.smart_copy(dst, indices),
-        # ))
-
-        # # set attention_mask
+        general_copy(k_home, indices, k_new, None)
+        general_copy(v_home, indices, v_new, None)
 
             
     def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,

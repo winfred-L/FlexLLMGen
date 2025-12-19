@@ -350,7 +350,7 @@ class TorchDevice:
         v_cache = self.allocate(shape, config.dtype, pin_memory=pin_memory)
         return k_cache, v_cache
 
-    def init_page_cache_one_gpu_batch(self, config, task, policy):
+    def init_sparse_cache_one_gpu_batch(self, config, task, policy):
         num_kv_head = config.num_key_value_heads
         num_head = config.n_head
         hidden_size = config.input_dim
@@ -1228,7 +1228,7 @@ class TorchDisk:
         v_cache = self.allocate(shape, config.dtype)
         return k_cache, v_cache
 
-    def init_page_cache_one_gpu_batch(self, config, task, policy):
+    def init_sparse_cache_one_gpu_batch(self, config, task, policy):
         num_kv_head = config.num_key_value_heads
         num_head = config.n_head
         hidden_size = config.input_dim
@@ -1344,8 +1344,8 @@ class TorchMixedDevice:
             seg_lengths=lens, pin_memory=pin_memory)
         return k_cache, v_cache
     
-    def init_page_cache_one_gpu_batch(self, config, task, policy):
-        raise NotImplementedError("Mixed device paged cache is not implemented yet.")
+    def init_sparse_cache_one_gpu_batch(self, config, task, policy):
+        raise NotImplementedError("Mixed device sparse cache is not implemented yet.")
 
 
 class TorchLink:

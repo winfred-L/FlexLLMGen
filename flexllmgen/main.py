@@ -288,7 +288,7 @@ if __name__ == "__main__":
     | args.overlap = False | generation_loop_normal()               | generation_loop_debug_normal()               |
     | args.overlap = True  | generation_loop_overlap_single_batch() | generation_loop_debug_overlap_single_batch() |
     '''
-    args.debug_mode = 'breakdown'
+    # args.debug_mode = 'breakdown'
     args.overlap = True
 
 
