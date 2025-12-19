@@ -304,7 +304,9 @@ if __name__ == "__main__":
     # 重定向print()到log文件
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     output_file = f'./logs/{args.model}-{timestamp}.txt'
-    sys.stdout = open(output_file, 'w', encoding='utf-8')
+    log_file = open(output_file, 'w', encoding='utf-8')
+    sys.stdout = log_file
+    sys.stderr = log_file
 
     # 打印参数设置
     print_args(args)

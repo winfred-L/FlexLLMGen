@@ -41,6 +41,7 @@ class VisionTask(Task):
     second_per_grid_ts: Optional[torch.Tensor] = None
 
     video_len: Optional[int] = None
+    reduced_video_len: Optional[int] = None
 
 
 @dataclasses.dataclass(frozen=True)
