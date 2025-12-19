@@ -7,6 +7,7 @@ import os
 
 from flexllmgen.policy import init_weight_list
 from flexllmgen.models.opt_layers import InputEmbed, OutputEmbed, SelfAttention, MLP, TransformerLayer
+from flexllmgen.pytorch_backend import DeviceType
 
 
 class Qwen2_5_VLTextInputEmbed(InputEmbed):
@@ -137,6 +138,60 @@ class Qwen2_5_VLAttention(SelfAttention):
                 w_v.smart_copy(dst1), b_v.smart_copy(dst2),
                 w_out.smart_copy(dst1), w_ln.smart_copy(dst2)))
             
+    def init_cache_one_gpu_batch(self, cache_home):
+        if self.policy.cache_gpu_percent == 100:
+            device = self.env.gpu
+        elif self.policy.cache_cpu_percent == 100:
+            device = self.env.cpu
+        elif self.policy.cache_disk_percent == 100:
+            device = self.env.disk
+        else:
+            device = self.env.mixed
+
+        if self.policy.compress_cache:
+            assert device.device_type != DeviceType.MIXED
+            device = device.compressed_device
+
+        if self.policy.do_sparse:
+            cache = device.init_page_cache_one_gpu_batch(self.config, self.task, self.policy)
+        else:
+            cache = device.init_cache_one_gpu_batch(self.config, self.task, self.policy)
+        
+        cache_home.store(cache)
+
+    def selective_load_cache(self, cache_home, cache_read_buf, i, attention_mask, prev_hidden):
+        # TODO
+        pass
+
+        # text_k_home, video_k_home, reduced_video_k_home, text_v_home, video_v_home = cache_home.val
+        # # cache shape: (s, b * n_kv_head, head_dim)
+        # bn_size = text_k_home.shape[1]
+        # dst = self.env.gpu # 目前为了方便代码书写，固定kv select在GPU上做
+
+        # # get text_cache_K
+        # indices = (slice(0, self.task.prompt_len - self.task.video_len + i),
+        #            slice(0, bn_size))
+        # text_k = text_k_home.smart_copy(dst, indices)
+        # text_v = text_v_home.smart_copy(dst, indices)
+
+        # # get reduced_video_cache_K
+        # indices = (slice(0, self.task.reduced_video_len),
+        #            slice(0, bn_size))
+        # reduced_video_k = reduced_video_k_home.smart_copy(dst, indices)
+
+        # # judge important video tokens
+
+        # # copy result cache to GPU
+        # indices = (slice(0, self.task.prompt_len + i),
+        #            slice(0, bn_size))
+        # cache_read_buf.store((
+        #     k_home.smart_copy(dst, indices),
+        #     v_home.smart_copy(dst, indices),
+        # ))
+
+        # # set attention_mask
+
+            
     def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,
                 cache_write_buf, i, k, position_embeddings):
         n_head = self.config.num_attention_heads
@@ -161,13 +216,22 @@ class Qwen2_5_VLAttention(SelfAttention):
                 self.config.rms_norm_eps, position_embeddings, self.config.rope_scaling_mrope_section)
             cache_write_buf.store((new_k_cache, new_v_cache))
         else:  # decoding
-            mask, donate[1] = attention_mask.val.smart_copy(self.attention_compute)
-            (k_cache, donate[10]), (v_cache, donate[11]) = cache_read_buf.pop()
-            h, new_k_cache, new_v_cache = self.compute.qwen25vl_gqa_gen(h, mask, w_q,
-                b_q, w_k, b_k, w_v, b_v, w_out, w_ln, n_head, n_kv_head,
-                k_cache, v_cache, donate, self.policy.attn_sparsity,
-                self.policy.compress_cache, self.policy.comp_cache_config,
-                self.config.rms_norm_eps, position_embeddings, self.config.rope_scaling_mrope_section)
+            if self.policy.do_sparse: # sparse attention
+                mask, donate[1] = attention_mask.val.smart_copy(self.attention_compute)
+                (k_cache, donate[10]), (v_cache, donate[11]) = cache_read_buf.pop()
+                h, new_k_cache, new_v_cache = self.compute.qwen25vl_gqa_gen_sparse(h, mask, w_q,
+                    b_q, w_k, b_k, w_v, b_v, w_out, w_ln, n_head, n_kv_head,
+                    k_cache, v_cache, donate, self.policy.attn_sparsity,
+                    self.policy.compress_cache, self.policy.comp_cache_config,
+                    self.config.rms_norm_eps, position_embeddings, self.config.rope_scaling_mrope_section)
+            else: # dense attention
+                mask, donate[1] = attention_mask.val.smart_copy(self.attention_compute)
+                (k_cache, donate[10]), (v_cache, donate[11]) = cache_read_buf.pop()
+                h, new_k_cache, new_v_cache = self.compute.qwen25vl_gqa_gen(h, mask, w_q,
+                    b_q, w_k, b_k, w_v, b_v, w_out, w_ln, n_head, n_kv_head,
+                    k_cache, v_cache, donate, self.policy.attn_sparsity,
+                    self.policy.compress_cache, self.policy.comp_cache_config,
+                    self.config.rms_norm_eps, position_embeddings, self.config.rope_scaling_mrope_section)
             cache_write_buf.store((new_k_cache, new_v_cache))
 
         hidden.val = h
@@ -216,6 +280,9 @@ class Qwen2_5_VLMLP(MLP):
 
 
 class Qwen2_5_VLDecoderLayer(TransformerLayer):
+    def selective_load_cache(self, cache_home, cache_read_buf, i, attention_mask, prev_hidden):
+        self.attention.selective_load_cache(cache_home, cache_read_buf, i, attention_mask, prev_hidden)
+
     def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,
                 cache_write_buf, i, k, position_embeddings):
         if k == self.policy.num_gpu_batches - 1:

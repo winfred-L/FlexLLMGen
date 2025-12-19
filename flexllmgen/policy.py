@@ -46,7 +46,7 @@ class Policy:
     # Whether to compute attention on CPU
     cpu_cache_compute: bool
 
-    # Sparsity of attention weights
+    # Sparsity of attention weights (Unused)
     attn_sparsity: float
 
     # Compress weights with group-wise quantization
@@ -56,6 +56,11 @@ class Policy:
     # Compress KV cache with group-wise quantization
     compress_cache: bool
     comp_cache_config: CompressionConfig
+
+    # Sparsity settings
+    do_sparse: bool
+    threshold_S: float
+    threshold_D: float
 
     @property
     def w_disk_percent(self):

@@ -40,6 +40,8 @@ class VisionTask(Task):
     video_grid_thw: Optional[torch.Tensor] = None
     second_per_grid_ts: Optional[torch.Tensor] = None
 
+    video_len: Optional[int] = None
+
 
 @dataclasses.dataclass(frozen=True)
 class ExecutionEnv:

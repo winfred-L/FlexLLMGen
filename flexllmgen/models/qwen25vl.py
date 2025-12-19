@@ -280,7 +280,10 @@ class Qwen25VLFlexLM(BaseFlexLM):
     由于只关注模型decoding阶段指标（TPOT等），encoder部分的实现
     并不影响最终性能的测量。
     '''
-    rotary_emb: Qwen2_5_VLRotaryEmbedding = None
+    attention_layer_ids: List[int] = None
+    mlp_layer_ids: List[int] = None
+
+    rotary_emb = None
     rope_deltas: torch.Tensor = None # [batch size, 1]
     position_embeddings: Tuple[torch.Tensor] = None # (cos, sin), each [Sections(T/H/W), Batch, Seq_Len, Head_Dim]
 
@@ -289,17 +292,34 @@ class Qwen25VLFlexLM(BaseFlexLM):
 
     def init_model_layers(self) -> List:
         layers = []
+        attention_layer_ids = []
+        mlp_layer_ids = []
         layers.append(TextInputEmbed(self.config, self.env, self.policy))
+        cnt = 1
         for i in range(self.config.num_hidden_layers):
             if self.policy.sep_layer:
                 layers.append(TextAttention(self.config, self.env, self.policy, i))
+                attention_layer_ids.append(cnt)
+                cnt += 1
                 layers.append(TextMLP(self.config, self.env, self.policy, i))
+                mlp_layer_ids.append(cnt)
+                cnt += 1
             else:
                 layers.append(TextDecoderLayer(self.config, self.env, self.policy, i))
+                attention_layer_ids.append(cnt)
+                mlp_layer_ids.append(cnt)
+                cnt += 1
         layers.append(OutputHead(self.config, self.env, self.policy))
+        self.attention_layer_ids = attention_layer_ids
+        self.mlp_layer_ids = mlp_layer_ids
         return layers
+    
+    def get_video_len(self, input_ids: np.ndarray) -> Tuple[int, int]:
+        # TODO
+        return 0, 0
 
     def get_task(self, inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) -> VisionTask:
+        video_len, reduced_video_len = self.get_video_len(inputs.input_ids)
         return VisionTask(
             input_ids=np.array(inputs.input_ids),
             prompt_len=inputs.input_ids.shape[1],
@@ -312,18 +332,33 @@ class Qwen25VLFlexLM(BaseFlexLM):
             attention_mask=inputs.attention_mask,
             pixel_values_videos=inputs.pixel_values_videos,
             video_grid_thw=inputs.video_grid_thw,
-            second_per_grid_ts=inputs.second_per_grid_ts if hasattr(inputs, 'second_per_grid_ts') else None, # qwen3vl没有这个参数
+            second_per_grid_ts=inputs.second_per_grid_ts,
+            video_len=video_len,
+            reduced_video_len=reduced_video_len,
         )
 
-    def compute_layer(self, i, j, k):
+    def selective_load_cache(self, i, j, k, overlap=True):
+        prev_hidden = self.hidden[i][j-1][k]
+
+        # Load from cache_home to cache_read_buf
+        # Set attention_mask for sparse attention
+        if overlap:
+            with torch.cuda.stream(self.load_cache_stream):
+                sparse_mask = self.layers[j].selective_load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i,
+                                                                  self.attention_mask[k], prev_hidden)
+        else:
+            sparse_mask = self.layers[j].selective_load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i,
+                                                              self.attention_mask[k], prev_hidden)
+        
+
+    def compute_layer(self, i, j, k, sparse_mask=None):
         # 为attention层计算额外传入position_embeddings
-        if isinstance(self.layers[j], TextAttention) or \
-           isinstance(self.layers[j], TextDecoderLayer):
+        if j in self.attention_layer_ids:
             self.layers[j].forward(
                 self.hidden[i][j][k], 
                 self.cache_read_buf[j][k],
                 self.weight_read_buf[j], 
-                self.attention_mask[k],
+                self.attention_mask[k] if sparse_mask is None else sparse_mask,
                 self.cache_write_buf[j][k], 
                 i, k, self.position_embeddings
             )
@@ -655,8 +690,15 @@ class Qwen25VLFlexLM(BaseFlexLM):
             timers("generate").start()
             self.update_attention_mask(i, 0)
             for j in range(self.num_layers):
+                if self.policy.do_sparse and \
+                    i != 0 and \
+                    (j+1) in self.attention_layer_ids and \
+                    self.attention_layer_ids.index(j+1) > 0:
+                    # do sparsity kv selection for attention layers except the first one
+                    self.selective_load_cache(i, j+1, 0)
+                else:
+                    self.load_cache(i, j+1, 0)
                 self.load_weight(i, j+1, 0)
-                self.load_cache(i, j+1, 0)
                 self.load_hidden(i, j, 0)
                 if j == 0 and i == 0: # replace the first InputEmbed layer with visual encoder
                     self.encoder(0)

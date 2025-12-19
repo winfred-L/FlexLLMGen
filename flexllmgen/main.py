@@ -133,12 +133,9 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
                     args.percent[4], args.percent[5],
                     args.overlap, args.sep_layer, args.pin_weight,
                     args.cpu_cache_compute, args.attn_sparsity,
-                    args.compress_weight,
-                    CompressionConfig(num_bits=4, group_size=64,
-                                      group_dim=0, symmetric=False),
-                    args.compress_cache,
-                    CompressionConfig(num_bits=4, group_size=64,
-                                      group_dim=2, symmetric=False))
+                    args.compress_weight, None,
+                    args.compress_cache, None,
+                    args.do_sparse, args.threshold_S, args.threshold_D)
     
     # 4. 模型初始化
     if args.model == 'qwen25vl-7b':
@@ -236,8 +233,12 @@ def add_parser_arguments(parser):
     parser.add_argument("--do-sample", type=bool, default=False)
     parser.add_argument("--temperature", type=float, default=0.000001)
     parser.add_argument("--debug-mode", type=str, default=None, choices=["fewer_batch", "breakdown"])
-    
 
+    # ===== 稀疏设置 =====
+    parser.add_argument("--do-sparse", type=bool, default=False)
+    parser.add_argument("--threshold_S", type=float, default=0.0)
+    parser.add_argument("--threshold_D", type=float, default=0.0)
+    
     # ===== 固定设置 =====
     parser.add_argument("--gpu-batch-size", type=int, default=1)
     parser.add_argument("--num-gpu-batches", type=int, default=1)
@@ -274,8 +275,8 @@ if __name__ == "__main__":
 
     # args.cuda_device = "cuda:1"
 
-    # args.model = "qwen25vl-7b"
-    args.model = "qwen3vl-8b"
+    args.model = "qwen25vl-7b"
+    # args.model = "qwen3vl-8b"
 
     # args.percent = [100, 0, 0, 100, 100, 0] # all cache to cpu
     # args.percent = [100, 0, 0, 0, 100, 0] # all cache to disk

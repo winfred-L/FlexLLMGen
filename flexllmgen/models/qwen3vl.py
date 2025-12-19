@@ -208,13 +208,6 @@ class Qwen3VLFlexLM(Qwen25VLFlexLM):
     继承自Qwen25VLFlexLM，无需修改
     '''
 
-    rotary_emb: Qwen3VLTextRotaryEmbedding = None
-    rope_deltas: torch.Tensor = None # [batch size, 1]
-    position_embeddings: Tuple[torch.Tensor] = None # (cos, sin), each [Sections(T/H/W), Batch, Seq_Len, Head_Dim]
-
-    # used for deepstack merger
-    mlp_layer_ids: List[int] = None
-
     # args for deepstack merger
     visual_pos_masks: torch.Tensor = None # shape: [batch_size, visual_seqlen]
     deepstack_video_embeds: torch.Tensor = None # shape: [num_layers, visual_seqlen, embed_dim]
@@ -223,25 +216,28 @@ class Qwen3VLFlexLM(Qwen25VLFlexLM):
     def get_model_config(self) -> Qwen3VLFlexConfig:
         return get_qwen3vl_config(self.name)
     
-    def init_model_layers(self) -> List:
-        layers = []
-        mlp_layer_ids = []
-        layers.append(TextInputEmbed(self.config, self.env, self.policy))
-        cnt = 1
-        for i in range(self.config.num_hidden_layers):
-            if self.policy.sep_layer:
-                layers.append(TextAttention(self.config, self.env, self.policy, i))
-                cnt += 1
-                layers.append(TextMLP(self.config, self.env, self.policy, i))
-                mlp_layer_ids.append(cnt)
-                cnt += 1
-            else:
-                layers.append(TextDecoderLayer(self.config, self.env, self.policy, i))
-                mlp_layer_ids.append(cnt)
-                cnt += 1
-        layers.append(OutputHead(self.config, self.env, self.policy))
-        self.mlp_layer_ids = mlp_layer_ids
-        return layers
+    def get_video_len(self, input_ids: np.ndarray) -> Tuple[int, int]:
+        # TODO
+        return 0, 0
+
+    def get_task(self, inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) -> VisionTask:
+        video_len, reduced_video_len = self.get_video_len(inputs.input_ids)
+        return VisionTask(
+            input_ids=np.array(inputs.input_ids),
+            prompt_len=inputs.input_ids.shape[1],
+            gen_len=max_new_tokens,
+            cut_gen_len=cut_gen_len,
+            do_sample=do_sample,
+            temperature=temperature,
+            stop=self.config.eos_token_id if stop is None else stop,
+
+            attention_mask=inputs.attention_mask,
+            pixel_values_videos=inputs.pixel_values_videos,
+            video_grid_thw=inputs.video_grid_thw,
+            second_per_grid_ts=None, # qwen3vl没有这个参数
+            video_len=video_len,
+            reduced_video_len=reduced_video_len,
+        )
 
     def compute_layer(self, i, j, k):
         '''

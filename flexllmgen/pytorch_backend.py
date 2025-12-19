@@ -350,6 +350,30 @@ class TorchDevice:
         v_cache = self.allocate(shape, config.dtype, pin_memory=pin_memory)
         return k_cache, v_cache
 
+    def init_page_cache_one_gpu_batch(self, config, task, policy):
+        num_kv_head = config.num_key_value_heads
+        num_head = config.n_head
+        hidden_size = config.input_dim
+        prompt_len = task.prompt_len
+        gen_len = task.gen_len
+        video_len = task.video_len
+        reduced_video_len = task.reduced_video_len
+        gpu_batch_size = policy.gpu_batch_size
+
+        # must be GQA
+        text_shape = (prompt_len - video_len + gen_len - 1, gpu_batch_size * num_kv_head, hidden_size // num_head)
+        video_shape = (video_len, gpu_batch_size * num_kv_head, hidden_size // num_head)
+        reduced_video_shape = (reduced_video_len, gpu_batch_size * num_head, hidden_size // num_head)
+
+        # allocate caches
+        pin_memory = False
+        text_k_cache = self.allocate(text_shape, config.dtype, pin_memory=pin_memory)
+        video_k_cache = self.allocate(video_shape, config.dtype, pin_memory=pin_memory)
+        reduced_video_k_cache = self.allocate(reduced_video_shape, config.dtype, pin_memory=pin_memory)
+        text_v_cache = self.allocate(text_shape, config.dtype, pin_memory=pin_memory)
+        video_v_cache = self.allocate(video_shape, config.dtype, pin_memory=pin_memory)
+        return text_k_cache, video_k_cache, reduced_video_k_cache, text_v_cache, video_v_cache
+
     def mha(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
             w_out, b_out, w_ln, b_ln, n_head, donate, compress_cache, comp_config):
         """Multi-head attention (prefill phase)."""
@@ -800,6 +824,12 @@ class TorchDevice:
         save_v = TorchTensor.create_from_torch(save_v, self)
 
         return TorchTensor.create_from_torch(output, self), save_k, save_v
+    
+    def qwen25vl_gqa_gen_sparse(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
+                w_out, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
+                attn_sparsity, compress_cache, comp_config,
+                rms_norm_eps, position_embeddings, rope_scaling_mrope_section):
+        """Grouped-Query Attention (decoding phase)."""
 
     def qwen3vl_gqa_gen(self, inputs, attention_mask, w_q, w_k, w_v,
                 w_out, q_ln, k_ln, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
@@ -889,6 +919,12 @@ class TorchDevice:
         save_v = TorchTensor.create_from_torch(save_v, self)
 
         return TorchTensor.create_from_torch(output, self), save_k, save_v
+    
+    def qwen3vl_gqa_gen_sparse(self, inputs, attention_mask, w_q, w_k, w_v,
+                w_out, q_ln, k_ln, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
+                attn_sparsity, compress_cache, comp_config,
+                rms_norm_eps, position_embeddings):
+        """Grouped-Query Attention (decoding phase)."""
 
     def _rotate_half(self, x):
         """Rotates half the hidden dims of the input."""
@@ -1192,6 +1228,29 @@ class TorchDisk:
         v_cache = self.allocate(shape, config.dtype)
         return k_cache, v_cache
 
+    def init_page_cache_one_gpu_batch(self, config, task, policy):
+        num_kv_head = config.num_key_value_heads
+        num_head = config.n_head
+        hidden_size = config.input_dim
+        prompt_len = task.prompt_len
+        gen_len = task.gen_len
+        video_len = task.video_len
+        reduced_video_len = task.reduced_video_len
+        gpu_batch_size = policy.gpu_batch_size
+
+        # must be GQA
+        text_shape = (prompt_len - video_len + gen_len - 1, gpu_batch_size * num_kv_head, hidden_size // num_head)
+        video_shape = (video_len, gpu_batch_size * num_kv_head, hidden_size // num_head)
+        reduced_video_shape = (reduced_video_len, gpu_batch_size * num_head, hidden_size // num_head)
+
+        # allocate caches
+        text_k_cache = self.allocate(text_shape, config.dtype)
+        video_k_cache = self.allocate(video_shape, config.dtype)
+        reduced_video_k_cache = self.allocate(reduced_video_shape, config.dtype)
+        text_v_cache = self.allocate(text_shape, config.dtype)
+        video_v_cache = self.allocate(video_shape, config.dtype)
+        return text_k_cache, video_k_cache, reduced_video_k_cache, text_v_cache, video_v_cache
+
     def submit_copy(self, *args):
         self.copy_queue.put_nowait(args)
 
@@ -1284,6 +1343,9 @@ class TorchMixedDevice:
         v_cache = self.allocate(shape, config.dtype,
             seg_lengths=lens, pin_memory=pin_memory)
         return k_cache, v_cache
+    
+    def init_page_cache_one_gpu_batch(self, config, task, policy):
+        raise NotImplementedError("Mixed device paged cache is not implemented yet.")
 
 
 class TorchLink:
