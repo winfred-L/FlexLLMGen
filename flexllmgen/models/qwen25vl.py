@@ -7,7 +7,7 @@ from tqdm import tqdm
 from collections import defaultdict
 
 from flexllmgen.timer import timers
-from flexllmgen.utils import VisionTask
+from flexllmgen.utils import VisionTask, VideoInfo
 from flexllmgen.pytorch_backend import TorchTensor
 from flexllmgen.models.base_model import BaseFlexLM
 from flexllmgen.models.qwen25vl_config import Qwen25VLFlexConfig, get_qwen25vl_config
@@ -20,6 +20,7 @@ from flexllmgen.models.qwen25vl_layers import (
 )
 
 from transformers import AutoConfig
+from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel, Qwen2_5_VLRotaryEmbedding
 
@@ -314,12 +315,46 @@ class Qwen25VLFlexLM(BaseFlexLM):
         self.mlp_layer_ids = mlp_layer_ids
         return layers
     
-    def get_video_len(self, input_ids: np.ndarray) -> Tuple[int, int]:
-        # TODO
-        return 0, 0
+    def get_video_info(self, inputs: BatchFeature) -> VideoInfo:
+        '''
+        Qwen2.5-VL prompt format:
+        <|im_start|>system
+        You are a helpful assistant.<|im_end|>
+        <|im_start|>user
+        <|vision_start|><|video_pad|>...<|video_pad|><|vision_end|>Please describe this video in detail.<|im_end|>
+        <|im_start|>assistant
+        '''
+        vision_start_token_id = 151652 # <|vision_start|>
+        vision_end_token_id = 151653 # <|vision_end|>
+        video_pad_token_id = 151656 # <|video_pad|>
+
+        T_len, H_len, W_len = inputs.video_grid_thw[0].tolist()
+        spatial_merge_size = self.config.vision_config.spatial_merge_size
+        H_len = H_len // spatial_merge_size
+        W_len = W_len // spatial_merge_size
+        
+        video_token_start_idx = (inputs.input_ids[0, :] == vision_start_token_id).nonzero().squeeze().item()
+        video_token_end_idx = (inputs.input_ids[0, :] == vision_end_token_id).nonzero().squeeze().item()
+        video_frame_length = (video_token_end_idx - video_token_start_idx - 1) // T_len
+
+        index_ranges = [] # <|vision_start|>, <|vision_end|> is not included
+        for t in range(T_len):
+            start_idx = video_token_start_idx + 1 + t * video_frame_length
+            end_idx = start_idx + video_frame_length - 1
+            index_ranges.append( (start_idx, end_idx) )
+
+        print(f'{T_len=}, {H_len=}, {W_len=}')
+        print(f'{index_ranges=}')
+        import pdb; pdb.set_trace()
+
+        return VideoInfo(
+            T_len=T_len,
+            H_len=H_len,
+            W_len=W_len,
+            index_ranges=index_ranges,
+        )
 
     def get_task(self, inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) -> VisionTask:
-        video_len, reduced_video_len = self.get_video_len(inputs.input_ids)
         return VisionTask(
             input_ids=np.array(inputs.input_ids),
             prompt_len=inputs.input_ids.shape[1],
@@ -333,11 +368,10 @@ class Qwen25VLFlexLM(BaseFlexLM):
             pixel_values_videos=inputs.pixel_values_videos,
             video_grid_thw=inputs.video_grid_thw,
             second_per_grid_ts=inputs.second_per_grid_ts,
-            video_len=video_len,
-            reduced_video_len=reduced_video_len,
+            video_info=self.get_video_info(inputs),
         )
 
-    def selective_load_cache(self, i, j, k, overlap=True):
+    def load_cache_sparse(self, i, j, k, overlap=True):
         '''
         sparse cache 修改：
         替换了原有的 attention 层的 load_cache 函数，额外传入 prev_hidden，返回 sparse_mask
@@ -358,10 +392,10 @@ class Qwen25VLFlexLM(BaseFlexLM):
         prev_hidden = self.hidden[i][j-1][k]
         if overlap:
             with torch.cuda.stream(self.load_cache_stream):
-                sparse_mask = self.layers[j].selective_load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i,
+                sparse_mask = self.layers[j].load_cache_sparse(self.cache_home[j][k], self.cache_read_buf[j][k], i,
                                                                   self.attention_mask[k], prev_hidden)
         else:
-            sparse_mask = self.layers[j].selective_load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i,
+            sparse_mask = self.layers[j].load_cache_sparse(self.cache_home[j][k], self.cache_read_buf[j][k], i,
                                                               self.attention_mask[k], prev_hidden)
 
         # Set up attention mask
@@ -710,7 +744,7 @@ class Qwen25VLFlexLM(BaseFlexLM):
                 if not self.policy.do_sparse:
                     self.load_cache(i, j+1, 0)
                 else:
-                    self.selective_load_cache(i, j+1, 0)
+                    self.load_cache_sparse(i, j+1, 0)
                 self.load_weight(i, j+1, 0)
                 self.load_hidden(i, j, 0)
                 if j == 0 and i == 0: # replace the first InputEmbed layer with visual encoder

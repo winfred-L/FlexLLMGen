@@ -6,7 +6,7 @@ import gc
 from collections import defaultdict
 
 from flexllmgen.timer import timers
-from flexllmgen.utils import VisionTask
+from flexllmgen.utils import VisionTask, VideoInfo
 from flexllmgen.pytorch_backend import TorchTensor
 from flexllmgen.models.qwen25vl import Qwen25VLFlexLM
 from flexllmgen.models.qwen3vl_config import Qwen3VLFlexConfig, get_qwen3vl_config
@@ -19,6 +19,7 @@ from flexllmgen.models.qwen3vl_layers import (
 )
 
 from transformers import AutoConfig
+from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel, Qwen3VLTextRotaryEmbedding
 
@@ -239,12 +240,43 @@ class Qwen3VLFlexLM(Qwen25VLFlexLM):
         self.mlp_layer_ids = mlp_layer_ids
         return layers
     
-    def get_video_len(self, input_ids: np.ndarray) -> Tuple[int, int]:
-        # TODO
-        return 0, 0
+    def get_video_info(self, inputs: BatchFeature) -> VideoInfo:
+        '''
+        Qwen3-VL prompt format:
+        <|im_start|>user
+        <x.x seconds><|vision_start|><|video_pad|>...<|video_pad|><|vision_end|>...<x.x seconds><|vision_start|><|video_pad|>...<|video_pad|><|vision_end|>Please describe this video in detail.<|im_end|>
+        <|im_start|>assistant
+        '''
+        vision_start_token_id = 151652 # <|vision_start|>
+        vision_end_token_id = 151653 # <|vision_end|>
+        video_pad_token_id = 151656 # <|video_pad|>
+
+        T_len, H_len, W_len = inputs.video_grid_thw[0].tolist()
+        spatial_merge_size = self.config.vision_config.spatial_merge_size
+        H_len = H_len // spatial_merge_size
+        W_len = W_len // spatial_merge_size
+
+        video_token_start_idx = (inputs.input_ids[0, :] == vision_start_token_id).nonzero().squeeze().tolist()
+        video_token_end_idx = (inputs.input_ids[0, :] == vision_end_token_id).nonzero().squeeze().tolist()
+
+        index_ranges = [] # <|vision_start|>, <|vision_end|> is not included
+        for t in range(T_len):
+            start_idx = video_token_start_idx[t] + 1
+            end_idx = video_token_end_idx[t] - 1
+            index_ranges.append( (start_idx, end_idx) )
+
+        print(f'{T_len=}, {H_len=}, {W_len=}')
+        print(f'{index_ranges=}')
+        import pdb; pdb.set_trace()
+
+        return VideoInfo(
+            T_len=T_len,
+            H_len=H_len,
+            W_len=W_len,
+            index_ranges=index_ranges,
+        )
 
     def get_task(self, inputs, max_new_tokens, cut_gen_len, do_sample, temperature, stop) -> VisionTask:
-        video_len, reduced_video_len = self.get_video_len(inputs.input_ids)
         return VisionTask(
             input_ids=np.array(inputs.input_ids),
             prompt_len=inputs.input_ids.shape[1],
@@ -258,8 +290,7 @@ class Qwen3VLFlexLM(Qwen25VLFlexLM):
             pixel_values_videos=inputs.pixel_values_videos,
             video_grid_thw=inputs.video_grid_thw,
             second_per_grid_ts=None, # qwen3vl没有这个参数
-            video_len=video_len,
-            reduced_video_len=reduced_video_len,
+            video_info=self.get_video_info(inputs),
         )
 
     def compute_layer(self, i, j, k):

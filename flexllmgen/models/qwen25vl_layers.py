@@ -182,7 +182,7 @@ class Qwen2_5_VLAttention(SelfAttention):
         ))
         
 
-    def selective_load_cache(self, cache_home, cache_read_buf, i, prev_hidden):
+    def load_cache_sparse(self, cache_home, cache_read_buf, i, prev_hidden):
         if i == 0:  # prefill, no cache
             return
         
@@ -316,8 +316,8 @@ class Qwen2_5_VLMLP(MLP):
 
 
 class Qwen2_5_VLDecoderLayer(TransformerLayer):
-    def selective_load_cache(self, cache_home, cache_read_buf, i, attention_mask, prev_hidden):
-        self.attention.selective_load_cache(cache_home, cache_read_buf, i, attention_mask, prev_hidden)
+    def load_cache_sparse(self, cache_home, cache_read_buf, i, attention_mask, prev_hidden):
+        self.attention.load_cache_sparse(cache_home, cache_read_buf, i, attention_mask, prev_hidden)
 
     def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,
                 cache_write_buf, i, k, position_embeddings):

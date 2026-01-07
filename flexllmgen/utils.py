@@ -32,16 +32,23 @@ class Task:
 
 
 @dataclasses.dataclass(frozen=True)
-class VisionTask(Task):
-    attention_mask: Optional[torch.Tensor] = None
-    # pixel_values: Optional[torch.Tensor] = None     # for image
-    pixel_values_videos: Optional[torch.Tensor] = None
-    # image_grid_thw: Optional[torch.Tensor] = None   # for image
-    video_grid_thw: Optional[torch.Tensor] = None
-    second_per_grid_ts: Optional[torch.Tensor] = None
+class VideoInfo:
+    T_len: int
+    H_len: int
+    W_len: int
+    index_ranges: list[tuple[int, int]]
 
-    video_len: Optional[int] = None
-    reduced_video_len: Optional[int] = None
+
+@dataclasses.dataclass(frozen=True)
+class VisionTask(Task):
+    attention_mask: torch.Tensor
+    # pixel_values: torch.Tensor
+    pixel_values_videos: torch.Tensor
+    # image_grid_thw: torch.Tensor
+    video_grid_thw: torch.Tensor
+    second_per_grid_ts: torch.Tensor
+    video_info: VideoInfo
+
 
 
 @dataclasses.dataclass(frozen=True)

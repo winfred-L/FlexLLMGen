@@ -143,7 +143,6 @@ class Qwen25VLFlexConfig:
     
 
 def get_qwen25vl_config(name, **kwargs):
-    # TODO: 根据模型大小设置不同参数
     config = Qwen25VLFlexConfig()
     return config
 

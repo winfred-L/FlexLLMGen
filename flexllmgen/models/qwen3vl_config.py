@@ -177,7 +177,6 @@ class Qwen3VLFlexConfig:
     
 
 def get_qwen3vl_config(name, **kwargs):
-    # TODO: 根据模型大小设置不同参数
     config = Qwen3VLFlexConfig()
     return config
 

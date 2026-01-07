@@ -137,7 +137,7 @@ class BaseFlexLM(ABC):
                 else:
                     x.delete()
 
-    def load_weight(self, i, j, k, overlap=True): #TODO
+    def load_weight(self, i, j, k, overlap=True):
         # Handle corner cases
         if j == self.num_layers:
             j = 0

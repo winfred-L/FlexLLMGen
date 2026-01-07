@@ -193,15 +193,6 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     print(f"  encoder weight size: {encoder_weight_size/GB:.3f} GB")
     print(f"  decoder weight size: {decoder_weight_size/GB:.3f} GB")
 
-    # TODO: 记录推理过程中实时的内存峰值
-
-    # cache_size = model_config.cache_bytes(num_prompts, prompt_len + gen_len)
-    # hidden_size = model_config.hidden_bytes(num_prompts, prompt_len + gen_len)
-    
-    # print(f"model weight size: {weight_size/GB:.3f} GB, "
-    #       f"kv cache size:     {cache_size/GB:.3f} GB, "
-    #       f"hidden state size: {hidden_size/GB:.3f} GB")
-
 
 
 def add_parser_arguments(parser):
@@ -288,8 +279,11 @@ if __name__ == "__main__":
     | args.overlap = False | generation_loop_normal()               | generation_loop_debug_normal()               |
     | args.overlap = True  | generation_loop_overlap_single_batch() | generation_loop_debug_overlap_single_batch() |
     '''
-    args.debug_mode = 'breakdown'
+    # args.debug_mode = 'breakdown'
     # args.overlap = True
+
+    # only for generation_loop_overlap_single_batch()
+    args.do_sparse = False
 
 
     video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
