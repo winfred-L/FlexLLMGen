@@ -173,10 +173,13 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
         env.close_copy_threads()
 
     # 7. 记录推理输出
-    outputs = processor.batch_decode(output_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    generated_ids_trimmed = [
+        out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, output_ids)
+    ]
+    outputs = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
     show_str = "Outputs:\n" + 70 * '-' + "\n"
     for i, output in enumerate(outputs):
-        show_str += f"{i}: {output}\n"
+        show_str += f"{output}\n"
         show_str += "-" * 70 + "\n"
     print(show_str)
         
@@ -266,8 +269,8 @@ if __name__ == "__main__":
 
     # args.cuda_device = "cuda:1"
 
-    # args.model = "qwen25vl-7b"
-    args.model = "qwen3vl-8b"
+    args.model = "qwen25vl-7b"
+    # args.model = "qwen3vl-8b"
 
     # args.percent = [100, 0, 0, 100, 100, 0] # all cache to cpu
     # args.percent = [100, 0, 0, 0, 100, 0] # all cache to disk
@@ -283,7 +286,7 @@ if __name__ == "__main__":
     # args.overlap = True
 
     # only for generation_loop_overlap_single_batch()
-    args.do_sparse = False
+    args.do_sparse = True
 
 
     video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s

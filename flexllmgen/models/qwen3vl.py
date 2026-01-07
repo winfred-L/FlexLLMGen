@@ -252,7 +252,7 @@ class Qwen3VLFlexLM(Qwen25VLFlexLM):
         video_pad_token_id = 151656 # <|video_pad|>
 
         T_len, H_len, W_len = inputs.video_grid_thw[0].tolist()
-        spatial_merge_size = self.config.vision_config.spatial_merge_size
+        spatial_merge_size = self.config.spatial_merge_size
         H_len = H_len // spatial_merge_size
         W_len = W_len // spatial_merge_size
 
@@ -265,9 +265,8 @@ class Qwen3VLFlexLM(Qwen25VLFlexLM):
             end_idx = video_token_end_idx[t] - 1
             index_ranges.append( (start_idx, end_idx) )
 
-        print(f'{T_len=}, {H_len=}, {W_len=}')
-        print(f'{index_ranges=}')
-        import pdb; pdb.set_trace()
+        # print(f'{T_len=}, {H_len=}, {W_len=}')
+        # print(f'{index_ranges=}')
 
         return VideoInfo(
             T_len=T_len,

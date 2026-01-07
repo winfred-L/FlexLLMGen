@@ -37,6 +37,10 @@ class VideoInfo:
     H_len: int
     W_len: int
     index_ranges: list[tuple[int, int]]
+    
+    @property
+    def total_len(self) -> int:
+        return self.T_len * self.H_len * self.W_len
 
 
 @dataclasses.dataclass(frozen=True)

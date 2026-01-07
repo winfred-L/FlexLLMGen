@@ -356,8 +356,8 @@ class TorchDevice:
         hidden_size = config.input_dim
         prompt_len = task.prompt_len
         gen_len = task.gen_len
-        video_len = task.video_len
-        reduced_video_len = task.reduced_video_len
+        video_len = task.video_info.total_len
+        reduced_video_len = task.video_info.T_len
         gpu_batch_size = policy.gpu_batch_size
 
         # must be GQA
@@ -830,6 +830,10 @@ class TorchDevice:
                 attn_sparsity, compress_cache, comp_config,
                 rms_norm_eps, position_embeddings, rope_scaling_mrope_section):
         """Grouped-Query Attention (decoding phase)."""
+        return self.qwen25vl_gqa_gen(inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
+                w_out, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
+                attn_sparsity, compress_cache, comp_config,
+                rms_norm_eps, position_embeddings, rope_scaling_mrope_section)
 
     def qwen3vl_gqa_gen(self, inputs, attention_mask, w_q, w_k, w_v,
                 w_out, q_ln, k_ln, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
@@ -925,6 +929,10 @@ class TorchDevice:
                 attn_sparsity, compress_cache, comp_config,
                 rms_norm_eps, position_embeddings):
         """Grouped-Query Attention (decoding phase)."""
+        return self.qwen3vl_gqa_gen(inputs, attention_mask, w_q, w_k, w_v,
+                w_out, q_ln, k_ln, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
+                attn_sparsity, compress_cache, comp_config,
+                rms_norm_eps, position_embeddings)
 
     def _rotate_half(self, x):
         """Rotates half the hidden dims of the input."""
@@ -1234,8 +1242,8 @@ class TorchDisk:
         hidden_size = config.input_dim
         prompt_len = task.prompt_len
         gen_len = task.gen_len
-        video_len = task.video_len
-        reduced_video_len = task.reduced_video_len
+        video_len = task.video_info.total_len
+        reduced_video_len = task.video_info.T_len
         gpu_batch_size = policy.gpu_batch_size
 
         # must be GQA

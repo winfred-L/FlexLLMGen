@@ -4,10 +4,11 @@
 
 
 import os
+import torch
 
 from flexllmgen.policy import init_weight_list
 from flexllmgen.models.opt_layers import InputEmbed, OutputEmbed, SelfAttention, MLP, TransformerLayer
-from flexllmgen.pytorch_backend import DeviceType, general_copy
+from flexllmgen.pytorch_backend import TorchTensor, DeviceType, general_copy
 
 
 class Qwen2_5_VLTextInputEmbed(InputEmbed):
@@ -207,13 +208,41 @@ class Qwen2_5_VLAttention(SelfAttention):
 
         # do kv selection
         # tmp: remove all video kv
+        prompt_text_len = self.task.prompt_len - self.task.video_info.total_len
+        current_text_len = prompt_text_len + i
+        indices = (slice(0, current_text_len), slice(0, text_k_home.shape[1]))
+        k_cache = text_k_home.smart_copy(dst, indices)
+        v_cache = text_v_home.smart_copy(dst, indices)
 
-
-        # 
-        cache_read_buf.store()
+        cache_read_buf.store((k_cache, v_cache))
         
 
         # Set up attention mask
+        # If the mask includes video tokens (full length), reduce it to text-only length
+        # 第一次的attention_mask是full length的，后续的都是text-only length的
+        attention_mask_value = attention_mask.pop() # TorchTensor
+        current_mask = attention_mask_value.data # torch.Tensor
+        # print(f'{current_text_len=}')
+        # print(f'{current_mask.shape=}')
+        if current_mask.shape[-1] != current_text_len:
+            full_len = current_mask.shape[-1]
+            # Use attention_mask.device.dev to get the actual torch.device
+            is_video = torch.zeros(full_len, dtype=torch.bool, device=attention_mask_value.device.dev)
+            
+            # Mark video positions (index_ranges are within the prompt)
+            for start, end in self.task.video_info.index_ranges:
+                is_video[start : end + 1] = True
+            
+            # Keep only non-video columns
+            keep_mask = ~is_video
+            
+            # Modify attention_mask for the current step
+            new_mask = current_mask[..., keep_mask]
+            new_mask = TorchTensor.create_from_torch(new_mask, attention_mask_value.device)
+            attention_mask.store(new_mask)
+        else:
+            # No change
+            attention_mask.store(attention_mask_value)
 
 
          
@@ -227,17 +256,15 @@ class Qwen2_5_VLAttention(SelfAttention):
                 return
 
             if i == 0:  # prefill
-                indices = (slice(0, k_new.shape[0]),
-                           slice(0, k_new.shape[1]))
+                indices = (slice(0, k_new.shape[0]), slice(0, k_new.shape[1]))
             else:  # decoding
                 pos = self.task.prompt_len + i
-                indices = (slice(pos - k_new.shape[0], pos),
-                           slice(0, k_new.shape[1]))
+                indices = (slice(pos - k_new.shape[0], pos), slice(0, k_new.shape[1]))
 
             general_copy(k_home, indices, k_new, None)
             general_copy(v_home, indices, v_new, None)
         
-        else:
+        else: # do sparse
             # shape: (s, b * n_head, head_dim)
             text_k_home, video_k_home, reduced_video_k_home, text_v_home, video_v_home = cache_home.val
             k_new, v_new = cache_write_buf.pop()
@@ -246,11 +273,44 @@ class Qwen2_5_VLAttention(SelfAttention):
                 return
 
             if i == 0:  # prefill
-                # TODO: 将k_new, v_new拆分为text和video两部分，然后分别存储
-                reduced_video_k_home = None
+                # separate k_new, v_new into text and video parts
+                index_ranges = self.task.video_info.index_ranges
+                prompt_len = k_new.shape[0]
+
+                # create mask for video tokens
+                is_video = torch.zeros(prompt_len, dtype=torch.bool, device=k_new.device.dev)
+                for start, end in index_ranges:
+                    is_video[start : end + 1] = True # inclusive
+                is_text = ~is_video
+
+                k_text = TorchTensor.create_from_torch(k_new.data[is_text], k_new.device)
+                v_text = TorchTensor.create_from_torch(v_new.data[is_text], v_new.device)
+                k_video = TorchTensor.create_from_torch(k_new.data[is_video], k_new.device)
+                v_video = TorchTensor.create_from_torch(v_new.data[is_video], v_new.device)
+
+                # store text KV
+                text_len = k_text.shape[0]
+                indices_text = (slice(0, text_len), slice(0, k_text.shape[1]))
+                general_copy(text_k_home, indices_text, k_text, None)
+                general_copy(text_v_home, indices_text, v_text, None)
+
+                # store video KV
+                video_len = k_video.shape[0]
+                indices_video = (slice(0, video_len), slice(0, k_video.shape[1]))
+                general_copy(video_k_home, indices_video, k_video, None)
+                general_copy(video_v_home, indices_video, v_video, None)
+
+                # TODO: set reduced_video_k
+            
             else:  # decoding
-                # TODO: 将k_new, v_new添加到text home
-                pass
+                # append k_new, v_new to text home
+                # calculate current text length position
+                prompt_text_len = self.task.prompt_len - self.task.video_info.total_len
+                pos = prompt_text_len + i
+                indices = (slice(pos - k_new.shape[0], pos), slice(0, k_new.shape[1]))
+                
+                general_copy(text_k_home, indices, k_new, None)
+                general_copy(text_v_home, indices, v_new, None)
 
             
     def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,

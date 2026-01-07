@@ -22,6 +22,7 @@ class Qwen25VLFlexConfig:
     vision_patch_size: int = 14
     vision_in_chans: int = 3
     vision_temporal_patch_size: int = 2
+    spatial_merge_size: int = 2  # 2x2 spatial merger
     
     # --- Other Config ---
     dtype: type = np.uint16 # <==> torch.bfloat16

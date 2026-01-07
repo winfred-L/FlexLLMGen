@@ -329,7 +329,7 @@ class Qwen25VLFlexLM(BaseFlexLM):
         video_pad_token_id = 151656 # <|video_pad|>
 
         T_len, H_len, W_len = inputs.video_grid_thw[0].tolist()
-        spatial_merge_size = self.config.vision_config.spatial_merge_size
+        spatial_merge_size = self.config.spatial_merge_size
         H_len = H_len // spatial_merge_size
         W_len = W_len // spatial_merge_size
         
@@ -343,9 +343,8 @@ class Qwen25VLFlexLM(BaseFlexLM):
             end_idx = start_idx + video_frame_length - 1
             index_ranges.append( (start_idx, end_idx) )
 
-        print(f'{T_len=}, {H_len=}, {W_len=}')
-        print(f'{index_ranges=}')
-        import pdb; pdb.set_trace()
+        # print(f'{T_len=}, {H_len=}, {W_len=}')
+        # print(f'{index_ranges=}')
 
         return VideoInfo(
             T_len=T_len,
@@ -384,8 +383,11 @@ class Qwen25VLFlexLM(BaseFlexLM):
             if i == self.execute_gen_len:
                 return
 
-        # Load from cache_home to cache_read_buf
         # Actually, only attention layers have cache to load
+        if j not in self.attention_layer_ids:
+            return
+        
+        # Load from cache_home to cache_read_buf
         if not self.policy.do_sparse:
             if overlap:
                 with torch.cuda.stream(self.load_cache_stream):
@@ -396,7 +398,7 @@ class Qwen25VLFlexLM(BaseFlexLM):
             if overlap:
                 # skip the first layer when overlapping
                 # prev_hidden is None means only static sparsity, no dynamic sparsity
-                prev_hidden = self.hidden[i][j-1][k] if j>0 else None
+                prev_hidden = self.hidden[i][j-1][k] if j>0 else None # BUG: j-1 不是上一层attneiton层
                 with torch.cuda.stream(self.load_cache_stream):
                     self.layers[j].load_cache_sparse(self.cache_home[j][k], self.cache_read_buf[j][k], i,
                                                      self.attention_mask[k], prev_hidden)

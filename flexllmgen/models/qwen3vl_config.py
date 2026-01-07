@@ -22,6 +22,7 @@ class Qwen3VLFlexConfig:
     vision_patch_size: int = 16
     vision_in_chans: int = 3
     vision_temporal_patch_size: int = 2
+    spatial_merge_size: int = 2  # 2x2 spatial merger
     
     vision_num_pos_embeddings: int = 2304
     vision_output_hidden_size: int = 4096 # Dimension after merger
