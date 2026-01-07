@@ -215,6 +215,30 @@ class Qwen3VLFlexLM(Qwen25VLFlexLM):
 
     def get_model_config(self) -> Qwen3VLFlexConfig:
         return get_qwen3vl_config(self.name)
+
+    def init_model_layers(self) -> List:
+        layers = []
+        attention_layer_ids = []
+        mlp_layer_ids = []
+        layers.append(TextInputEmbed(self.config, self.env, self.policy))
+        cnt = 1
+        for i in range(self.config.num_hidden_layers):
+            if self.policy.sep_layer:
+                layers.append(TextAttention(self.config, self.env, self.policy, i))
+                attention_layer_ids.append(cnt)
+                cnt += 1
+                layers.append(TextMLP(self.config, self.env, self.policy, i))
+                mlp_layer_ids.append(cnt)
+                cnt += 1
+            else:
+                layers.append(TextDecoderLayer(self.config, self.env, self.policy, i))
+                attention_layer_ids.append(cnt)
+                mlp_layer_ids.append(cnt)
+                cnt += 1
+        layers.append(OutputHead(self.config, self.env, self.policy))
+        self.attention_layer_ids = attention_layer_ids
+        self.mlp_layer_ids = mlp_layer_ids
+        return layers
     
     def get_video_len(self, input_ids: np.ndarray) -> Tuple[int, int]:
         # TODO

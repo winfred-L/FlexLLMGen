@@ -275,8 +275,8 @@ if __name__ == "__main__":
 
     # args.cuda_device = "cuda:1"
 
-    args.model = "qwen25vl-7b"
-    # args.model = "qwen3vl-8b"
+    # args.model = "qwen25vl-7b"
+    args.model = "qwen3vl-8b"
 
     # args.percent = [100, 0, 0, 100, 100, 0] # all cache to cpu
     # args.percent = [100, 0, 0, 0, 100, 0] # all cache to disk
@@ -288,8 +288,8 @@ if __name__ == "__main__":
     | args.overlap = False | generation_loop_normal()               | generation_loop_debug_normal()               |
     | args.overlap = True  | generation_loop_overlap_single_batch() | generation_loop_debug_overlap_single_batch() |
     '''
-    # args.debug_mode = 'breakdown'
-    args.overlap = True
+    args.debug_mode = 'breakdown'
+    # args.overlap = True
 
 
     video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
