@@ -182,25 +182,39 @@ class Qwen2_5_VLAttention(SelfAttention):
         ))
         
 
-    def load_cache_sparse(self, cache_home, cache_read_buf, i, prev_hidden):
+    def load_cache_sparse(self, cache_home, cache_read_buf, i, attention_mask, prev_hidden):
+        '''
+        load sparse kv cache to GPU.
+        when prev_hidden is None, only static sparsity is used.
+        only cache_home split text and video kv, cache_read_buf and cache_write_buf does not.
+        '''
+        assert self.attention_compute == self.env.gpu
+
         if i == 0:  # prefill, no cache
             return
         
-        # (text_k_cache, video_k_cache, reduced_video_k_cache, text_v_cache, video_v_cache)
+        # shape: (s, b * n_head, head_dim)
         text_k_home, video_k_home, reduced_video_k_home, text_v_home, video_v_home = cache_home.val
         dst = self.env.gpu
-        # cache shape: (s, b * n_head, head_dim)
-        
 
-        # load text_k and reduced_video_k first to select kv for sparse attention
-        indices = (slice(0, self.task.prompt_len - self.task.video_len + i),
-                   slice(0, text_k_home.shape[1]))
-        text_k = text_k_home.smart_copy(dst, indices)
-        indices = (slice(0, self.task.reduced_video_len),
-                   slice(0, reduced_video_k_home.shape[1]))
-        reduced_video_k = reduced_video_k_home.smart_copy(dst, indices)
+        # # load text_k and reduced_video_k first to select kv for sparse attention
+        # indices = (slice(0, self.task.prompt_len - self.task.video_len + i),
+        #            slice(0, text_k_home.shape[1]))
+        # text_k = text_k_home.smart_copy(dst, indices)
+        # indices = (slice(0, self.task.reduced_video_len),
+        #            slice(0, reduced_video_k_home.shape[1]))
+        # reduced_video_k = reduced_video_k_home.smart_copy(dst, indices)
 
         # do kv selection
+        # tmp: remove all video kv
+
+
+        # 
+        cache_read_buf.store()
+        
+
+        # Set up attention mask
+
 
          
     def store_cache(self, cache_home, cache_write_buf, i):
@@ -214,18 +228,29 @@ class Qwen2_5_VLAttention(SelfAttention):
 
             if i == 0:  # prefill
                 indices = (slice(0, k_new.shape[0]),
-                        slice(0, k_new.shape[1]))
+                           slice(0, k_new.shape[1]))
             else:  # decoding
                 pos = self.task.prompt_len + i
                 indices = (slice(pos - k_new.shape[0], pos),
-                        slice(0, k_new.shape[1]))
+                           slice(0, k_new.shape[1]))
 
             general_copy(k_home, indices, k_new, None)
             general_copy(v_home, indices, v_new, None)
         
         else:
-            # TODO
-            pass
+            # shape: (s, b * n_head, head_dim)
+            text_k_home, video_k_home, reduced_video_k_home, text_v_home, video_v_home = cache_home.val
+            k_new, v_new = cache_write_buf.pop()
+
+            if i == self.task.gen_len - 1:  # last token, no need to store cache
+                return
+
+            if i == 0:  # prefill
+                # TODO: 将k_new, v_new拆分为text和video两部分，然后分别存储
+                reduced_video_k_home = None
+            else:  # decoding
+                # TODO: 将k_new, v_new添加到text home
+                pass
 
             
     def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,

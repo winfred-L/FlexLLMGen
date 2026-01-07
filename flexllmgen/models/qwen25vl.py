@@ -371,11 +371,7 @@ class Qwen25VLFlexLM(BaseFlexLM):
             video_info=self.get_video_info(inputs),
         )
 
-    def load_cache_sparse(self, i, j, k, overlap=True):
-        '''
-        sparse cache 修改：
-        替换了原有的 attention 层的 load_cache 函数，额外传入 prev_hidden，返回 sparse_mask
-        '''
+    def load_cache(self, i, j, k, overlap=True):
         # Handle corner cases
         if i == 0:  # prefill, no cache
             return
@@ -389,27 +385,34 @@ class Qwen25VLFlexLM(BaseFlexLM):
                 return
 
         # Load from cache_home to cache_read_buf
-        prev_hidden = self.hidden[i][j-1][k]
-        if overlap:
-            with torch.cuda.stream(self.load_cache_stream):
-                sparse_mask = self.layers[j].load_cache_sparse(self.cache_home[j][k], self.cache_read_buf[j][k], i,
-                                                                  self.attention_mask[k], prev_hidden)
+        # Actually, only attention layers have cache to load
+        if not self.policy.do_sparse:
+            if overlap:
+                with torch.cuda.stream(self.load_cache_stream):
+                    self.layers[j].load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i)
+            else:
+                self.layers[j].load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i)
         else:
-            sparse_mask = self.layers[j].load_cache_sparse(self.cache_home[j][k], self.cache_read_buf[j][k], i,
-                                                              self.attention_mask[k], prev_hidden)
+            if overlap:
+                # skip the first layer when overlapping
+                # prev_hidden is None means only static sparsity, no dynamic sparsity
+                prev_hidden = self.hidden[i][j-1][k] if j>0 else None
+                with torch.cuda.stream(self.load_cache_stream):
+                    self.layers[j].load_cache_sparse(self.cache_home[j][k], self.cache_read_buf[j][k], i,
+                                                     self.attention_mask[k], prev_hidden)
+            else:
+                self.layers[j].load_cache_sparse(self.cache_home[j][k], self.cache_read_buf[j][k], i,
+                                                 self.attention_mask[k], None)   
 
-        # Set up attention mask
-        # TODO
-        
 
-    def compute_layer(self, i, j, k, sparse_mask=None):
+    def compute_layer(self, i, j, k):
         # 为attention层计算额外传入position_embeddings
         if j in self.attention_layer_ids:
             self.layers[j].forward(
                 self.hidden[i][j][k], 
                 self.cache_read_buf[j][k],
                 self.weight_read_buf[j], 
-                self.attention_mask[k] if sparse_mask is None else sparse_mask,
+                self.attention_mask[k],
                 self.cache_write_buf[j][k], 
                 i, k, self.position_embeddings
             )
@@ -741,10 +744,7 @@ class Qwen25VLFlexLM(BaseFlexLM):
             timers("generate").start()
             self.update_attention_mask(i, 0)
             for j in range(self.num_layers):
-                if not self.policy.do_sparse:
-                    self.load_cache(i, j+1, 0)
-                else:
-                    self.load_cache_sparse(i, j+1, 0)
+                self.load_cache(i, j+1, 0)
                 self.load_weight(i, j+1, 0)
                 self.load_hidden(i, j, 0)
                 if j == 0 and i == 0: # replace the first InputEmbed layer with visual encoder
