@@ -338,10 +338,24 @@ class Qwen25VLFlexLM(BaseFlexLM):
         )
 
     def selective_load_cache(self, i, j, k, overlap=True):
-        prev_hidden = self.hidden[i][j-1][k]
+        '''
+        sparse cache 修改：
+        替换了原有的 attention 层的 load_cache 函数，额外传入 prev_hidden，返回 sparse_mask
+        '''
+        # Handle corner cases
+        if i == 0:  # prefill, no cache
+            return
+        if k == self.num_gpu_batches:
+            k = 0
+            j += 1
+        if j == self.num_layers:
+            j = 0
+            i += 1
+            if i == self.execute_gen_len:
+                return
 
         # Load from cache_home to cache_read_buf
-        # Set attention_mask for sparse attention
+        prev_hidden = self.hidden[i][j-1][k]
         if overlap:
             with torch.cuda.stream(self.load_cache_stream):
                 sparse_mask = self.layers[j].selective_load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i,
@@ -349,6 +363,9 @@ class Qwen25VLFlexLM(BaseFlexLM):
         else:
             sparse_mask = self.layers[j].selective_load_cache(self.cache_home[j][k], self.cache_read_buf[j][k], i,
                                                               self.attention_mask[k], prev_hidden)
+
+        # Set up attention mask
+        # TODO
         
 
     def compute_layer(self, i, j, k, sparse_mask=None):
@@ -690,16 +707,11 @@ class Qwen25VLFlexLM(BaseFlexLM):
             timers("generate").start()
             self.update_attention_mask(i, 0)
             for j in range(self.num_layers):
-                # if self.policy.do_sparse and \
-                #     i != 0 and \
-                #     (j+1) in self.attention_layer_ids and \
-                #     self.attention_layer_ids.index(j+1) > 0:
-                #     # do sparsity kv selection for attention layers except the first one
-                #     self.selective_load_cache(i, j+1, 0)
-                # else:
-                #     self.load_cache(i, j+1, 0)
+                if not self.policy.do_sparse:
+                    self.load_cache(i, j+1, 0)
+                else:
+                    self.selective_load_cache(i, j+1, 0)
                 self.load_weight(i, j+1, 0)
-                self.load_cache(i, j+1, 0)
                 self.load_hidden(i, j, 0)
                 if j == 0 and i == 0: # replace the first InputEmbed layer with visual encoder
                     self.encoder(0)

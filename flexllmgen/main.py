@@ -306,7 +306,7 @@ if __name__ == "__main__":
     output_file = f'./logs/{args.model}-{timestamp}.txt'
     log_file = open(output_file, 'w', encoding='utf-8')
     sys.stdout = log_file
-    sys.stderr = log_file
+    # sys.stderr = log_file
 
     # 打印参数设置
     print_args(args)
