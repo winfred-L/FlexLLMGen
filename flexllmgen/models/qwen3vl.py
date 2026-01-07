@@ -23,7 +23,7 @@ from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLVisionModel, Qwen3VLTextRotaryEmbedding
 
 
-# modified from Qwen3VLModel
+# modified from transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLModel
 def get_video_features(
     visual_encoder: Qwen3VLVisionModel,
     pixel_values_videos: torch.FloatTensor,
@@ -35,7 +35,7 @@ def get_video_features(
     image_embeds = torch.split(video_embeds, split_sizes)
     return image_embeds, deepstack_video_embeds
 
-# modified from Qwen3VLModel
+# modified from transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLModel
 def get_placeholder_mask(
     text_embed_layer: torch.nn.Embedding,
     config: Qwen3VLConfig,
@@ -73,7 +73,7 @@ def get_placeholder_mask(
 
     return special_image_mask, special_video_mask
 
-# modified from Qwen3VLModel
+# modified from transformers.models.qwen3_vl.modeling_qwen3_vl.Qwen3VLModel
 def get_rope_index(
     config: Qwen3VLConfig,
     input_ids: Optional[torch.LongTensor] = None,
@@ -204,8 +204,7 @@ class Qwen3VLFlexLM(Qwen25VLFlexLM):
     2. 添加了deepstack_merger，会将视觉特征与decoder前几层的hidden state融合（仅prefill阶段）
     3. attention层添加了QK norm，作用在W_q与W_k之后，rotary_pos_emb之前
 
-    generation_loop_normal(), generation_loop_debug_normal() 等方法
-    继承自Qwen25VLFlexLM，无需修改
+    generation_loop_normal(), generation_loop_debug_normal() 等推理实现继承自Qwen25VLFlexLM，无需修改
     '''
 
     # args for deepstack merger
