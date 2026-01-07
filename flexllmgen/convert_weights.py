@@ -9,13 +9,13 @@ from safetensors.torch import load_file
 
 # 配置你的路径
 # MODEL_NAME = "opt-1.3b"
-MODEL_NAME = "qwen25vl-7b"
-# MODEL_NAME = "qwen3vl-8b"
+# MODEL_NAME = "qwen25vl-7b"
+MODEL_NAME = "qwen3vl-8b"
 
 # 你下载的原始模型路径 (ModelScope 下载路径)
 # SOURCE_PATH = "/data/lyc/models/opt-1.3b"
-SOURCE_PATH = "/data/lyc/models/Qwen2.5-VL-7B-Instruct"
-# SOURCE_PATH = "/data/lyc/models/Qwen3-VL-8B-Instruct"
+# SOURCE_PATH = "/data/lyc/models/Qwen2.5-VL-7B-Instruct"
+SOURCE_PATH = "/data/lyc/models/Qwen3-VL-8B-Instruct"
 
 # 目标输出路径 (FlexLLMGen 读取的父目录)
 OUTPUT_PARENT_DIR = "/data/lyc/models"

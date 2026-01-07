@@ -24,7 +24,7 @@ from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLCo
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VisionTransformerPretrainedModel, Qwen2_5_VLRotaryEmbedding
 
 
-# modified from Qwen2_5_VLModel
+# modified from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl.Qwen2_5_VLModel
 def get_video_features(
     visual_encoder: Qwen2_5_VisionTransformerPretrainedModel,
     pixel_values_videos: torch.FloatTensor,
@@ -39,7 +39,7 @@ def get_video_features(
     video_embeds = torch.split(video_embeds, split_sizes)
     return video_embeds
 
-# modified from Qwen2_5_VLModel
+# modified from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl.Qwen2_5_VLModel
 def get_placeholder_mask(
     text_embed_layer: torch.nn.Embedding,
     config: Qwen2_5_VLConfig,
@@ -81,7 +81,7 @@ def get_placeholder_mask(
 
     return special_image_mask, special_video_mask
 
-# modified from Qwen2_5_VLModel
+# modified from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl.Qwen2_5_VLModel
 def get_rope_index(
     config: Qwen2_5_VLConfig,
     input_ids: Optional[torch.LongTensor] = None,
