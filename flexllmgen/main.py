@@ -135,6 +135,7 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
                     args.cpu_cache_compute, args.attn_sparsity,
                     args.compress_weight, None,
                     args.compress_cache, None,
+                    args.attn_impl,
                     args.do_sparse, args.threshold_S, args.threshold_D)
     
     # 4. 模型初始化
@@ -172,29 +173,24 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     finally:
         env.close_copy_threads()
 
-    # 7. 记录推理输出
+    # # 7. 记录模型权重、kv cache、中间激活值的大小
+    # encoder_weight_size = model_config.encoder_weight_bytes()
+    # decoder_weight_size = model_config.decoder_weight_bytes()
+    # weight_size = model_config.model_bytes()
+    # print(f"model weight size: {weight_size/GB:.3f} GB")
+    # print(f"  encoder weight size: {encoder_weight_size/GB:.3f} GB")
+    # print(f"  decoder weight size: {decoder_weight_size/GB:.3f} GB")
+
+    # 8. 记录推理输出
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, output_ids)
     ]
     outputs = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-    show_str = "Outputs:\n" + 70 * '-' + "\n"
+    show_str = "\nOutputs:\n" + 70 * '-' + "\n"
     for i, output in enumerate(outputs):
         show_str += f"{output}\n"
         show_str += "-" * 70 + "\n"
     print(show_str)
-        
-    # 8. 记录硬件性能统计
-    gpu.print_stats()
-    cpu.print_stats()
-    # disk.print_stats() # NotImplemented
-
-    # 9. 记录模型权重、kv cache、中间激活值的大小
-    encoder_weight_size = model_config.encoder_weight_bytes()
-    decoder_weight_size = model_config.decoder_weight_bytes()
-    weight_size = model_config.model_bytes()
-    print(f"model weight size: {weight_size/GB:.3f} GB")
-    print(f"  encoder weight size: {encoder_weight_size/GB:.3f} GB")
-    print(f"  decoder weight size: {decoder_weight_size/GB:.3f} GB")
 
 
 
@@ -219,7 +215,9 @@ def add_parser_arguments(parser):
          "the percentage of attention cache on CPU, "
          "the percentage of activations on GPU, "
          "the percentage of activations on CPU")
-    
+    parser.add_argument("--attn-impl", type=str, default="flash_attn",
+        choices=["eager", "flash_attn"],
+        help="The attention implementation to use.")
     
     # ===== 推理设置 =====
     parser.add_argument("--cuda-device", type=str, default='cuda:0')
@@ -269,8 +267,8 @@ if __name__ == "__main__":
 
     # args.cuda_device = "cuda:1"
 
-    args.model = "qwen25vl-7b"
-    # args.model = "qwen3vl-8b"
+    # args.model = "qwen25vl-7b"
+    args.model = "qwen3vl-8b"
 
     # args.percent = [100, 0, 0, 100, 100, 0] # all cache to cpu
     # args.percent = [100, 0, 0, 0, 100, 0] # all cache to disk
@@ -282,11 +280,13 @@ if __name__ == "__main__":
     | args.overlap = False | generation_loop_normal()               | generation_loop_debug_normal()               |
     | args.overlap = True  | generation_loop_overlap_single_batch() | generation_loop_debug_overlap_single_batch() |
     '''
-    # args.debug_mode = 'breakdown'
-    # args.overlap = True
+    args.debug_mode = 'breakdown'
+    args.overlap = True
+
+    # args.attn_impl = "eager"  # only for no sparse
 
     # only for generation_loop_overlap_single_batch()
-    args.do_sparse = True
+    args.do_sparse = False
 
 
     video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s

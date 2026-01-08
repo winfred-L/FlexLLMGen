@@ -57,6 +57,9 @@ class Policy:
     compress_cache: bool
     comp_cache_config: CompressionConfig
 
+    # Attention implementation
+    attn_impl: str
+
     # Sparsity settings
     do_sparse: bool
     threshold_S: float

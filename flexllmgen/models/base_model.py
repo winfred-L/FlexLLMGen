@@ -414,6 +414,7 @@ class BaseFlexLM(ABC):
             return f"{size:.2f} {units[i]}"
         
         print("\n"+"="*60+"\n"+f"{'INFERENCE MEMORY REPORT':^60}\n"+"="*60)
+        print(f"{'Buffer Name':<30} {'Peak Memory':>12}")
         buffer_list = [
             self.weight_home,
             self.weight_read_buf,
@@ -425,7 +426,12 @@ class BaseFlexLM(ABC):
         ]
         for buffer in buffer_list:
             formatted_size = format_size(buffer.peak_bytes)
-            print(f"{buffer.name:<30} Peak Memory: {formatted_size:>12}")
+            print(f"{buffer.name:<30} {formatted_size:>12}")
+        
+        print()
+        self.env.gpu.print_stats()
+        self.env.cpu.print_stats()
+        # self.env.disk.print_stats() # NotImplemented
         print("="*60+"\n")
 
 

@@ -743,14 +743,16 @@ class TorchDevice:
     def qwen25vl_gqa_gen(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
                 w_out, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
                 attn_sparsity, compress_cache, comp_config,
-                rms_norm_eps, position_embeddings, rope_scaling_mrope_section):
+                rms_norm_eps, position_embeddings, rope_scaling_mrope_section, attn_impl):
         """Grouped-Query Attention (decoding phase)."""
         assert not compress_cache, "GQA compress cache in generation is not implemented yet."
         assert attn_sparsity >= 1.0, "GQA sparse attention in generation is not implemented yet."
         assert isinstance(k_cache, TorchTensor), "GQA mixed device attention is not implemented yet."
 
         b, tgt_s, h = inputs.shape
+        src_s = attention_mask.shape[1]
         head_dim = h // n_head
+        group_size = n_head // n_kv_head
         scaling = head_dim ** -0.5
 
         hidden = self.rms_norm(inputs.data, weight=w_ln.data, eps=rms_norm_eps)
@@ -786,26 +788,71 @@ class TorchDevice:
         save_k = k.clone()
         save_v = v.clone()
 
-        # k_cache shape: (max_seq, b * n_kv_head, head_dim)
-        max_seq_len = k_cache.data.shape[0]
-        # (S, B*N, D) -> (S, B, N, D) -> (B, S, N, D)
-        k_cache_view = k_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
-        v_cache_view = v_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
+        if attn_impl == 'eager':
+            # shape: (1, b * n_kv_head, head_dim)
+            k_new = k.transpose(0, 1).reshape(tgt_s, b * n_kv_head, head_dim)
+            v_new = v.transpose(0, 1).reshape(tgt_s, b * n_kv_head, head_dim)
+            # shape: (s, b * n_kv_head, head_dim)
+            k = k_cache.data[:src_s]
+            v = v_cache.data[:src_s]
+            k[src_s - 1:src_s] = k_new
+            v[src_s - 1:src_s] = v_new
 
-        seqlens = attention_mask.data.sum(dim=1, dtype=torch.int32)
-        # cache_seqlens 指示 "写入位置的索引"，对于长度为 L 的序列，新 Token 写在下标 L-1 处
-        cache_seqlens = seqlens - 1
+            # shape: (b, n_kv_head, group_size, 1, head_dim)
+            q = q.permute(0, 2, 1, 3).view(b, n_kv_head, group_size, tgt_s, head_dim)
+            # shape: (b, n_kv_head, 1, head_dim, src_s)
+            k = k.permute(1, 2, 0).reshape(b, n_kv_head, head_dim, src_s).unsqueeze(2)
+            # shape: (b, n_kv_head, 1, src_s, head_dim)
+            v = v.permute(1, 0, 2).reshape(b, n_kv_head, src_s, head_dim).unsqueeze(2)
 
-        attn_output = flash_attn_with_kvcache(
-            q=q,
-            k_cache=k_cache_view,
-            v_cache=v_cache_view,
-            k=k,
-            v=v,
-            cache_seqlens=cache_seqlens,
-            softmax_scale=scaling,
-            causal=True,
-        )
+            # Attention Score (Broadcasting happens on dim 2)
+            # (b, n_kv_head, group, 1, d) @ (b, n_kv_head, 1, d, s)
+            # -> (b, n_kv_head, group, 1, s)
+            attn_weights = torch.matmul(q, k) * scaling
+
+            # shape: (b, 1, 1, s)
+            mask = attention_mask.data.view(b, 1, 1, src_s)
+            # shape: (b * n_head, 1, s)
+            attn_weights = attn_weights.view(b, n_head, 1, src_s)
+            attn_weights = torch.where(mask, attn_weights, float('-inf'))
+            attn_weights = attn_weights.view(b * n_head, 1, src_s)
+            attn_weights = F.softmax(attn_weights, dim=2, dtype=torch.float32).to(inputs.dtype)
+            # shape: (b, n_kv_head, group_size, 1, s)
+            attn_weights = attn_weights.view(b, n_kv_head, group_size, tgt_s, src_s)
+
+            # save attn_weights for analysis
+            save_attn_weights = attn_weights.clone()
+
+            # (b, n_kv_head, group, 1, s) @ (b, n_kv_head, 1, s, d)
+            # -> (b, n_kv_head, group, 1, d)
+            attn_output = torch.matmul(attn_weights, v).view(b, n_head, tgt_s, head_dim)
+            # shape: (b, 1, n_head, head_dim)
+            attn_output = attn_output.transpose(1, 2)
+
+        elif attn_impl == 'flash_attn':
+            # k_cache shape: (max_seq, b * n_kv_head, head_dim)
+            max_seq_len = k_cache.data.shape[0]
+            # (S, B*N, D) -> (S, B, N, D) -> (B, S, N, D)
+            k_cache_view = k_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
+            v_cache_view = v_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
+
+            seqlens = attention_mask.data.sum(dim=1, dtype=torch.int32)
+            # cache_seqlens 指示 "写入位置的索引"，对于长度为 L 的序列，新 Token 写在下标 L-1 处
+            cache_seqlens = seqlens - 1
+
+            attn_output = flash_attn_with_kvcache(
+                q=q,
+                k_cache=k_cache_view,
+                v_cache=v_cache_view,
+                k=k,
+                v=v,
+                cache_seqlens=cache_seqlens,
+                softmax_scale=scaling,
+                causal=True,
+            )
+
+        else:
+            raise ValueError(f"Unknown attention implementation: {attn_impl}. Supported: eager, flash_attn.")
 
         # (b, 1, n, d) -> (b, 1, h)
         output = attn_output.reshape(b, tgt_s, h)
@@ -825,6 +872,7 @@ class TorchDevice:
 
         return TorchTensor.create_from_torch(output, self), save_k, save_v
     
+
     def qwen25vl_gqa_gen_sparse(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
                 w_out, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
                 attn_sparsity, compress_cache, comp_config,
@@ -838,14 +886,16 @@ class TorchDevice:
     def qwen3vl_gqa_gen(self, inputs, attention_mask, w_q, w_k, w_v,
                 w_out, q_ln, k_ln, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
                 attn_sparsity, compress_cache, comp_config,
-                rms_norm_eps, position_embeddings):
+                rms_norm_eps, position_embeddings, attn_impl):
         """Grouped-Query Attention (decoding phase)."""
         assert not compress_cache, "GQA compress cache in generation is not implemented yet."
         assert attn_sparsity >= 1.0, "GQA sparse attention in generation is not implemented yet."
         assert isinstance(k_cache, TorchTensor), "GQA mixed device attention is not implemented yet."
 
         b, tgt_s, h = inputs.shape
+        src_s = attention_mask.shape[1]
         head_dim = h // n_head
+        group_size = n_head // n_kv_head
         scaling = head_dim ** -0.5
 
         hidden = self.rms_norm(inputs.data, weight=w_ln.data, eps=rms_norm_eps)
@@ -885,26 +935,71 @@ class TorchDevice:
         save_k = k.clone()
         save_v = v.clone()
 
-        # k_cache shape: (max_seq, b * n_kv_head, head_dim)
-        max_seq_len = k_cache.data.shape[0]
-        # (S, B*N, D) -> (S, B, N, D) -> (B, S, N, D)
-        k_cache_view = k_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
-        v_cache_view = v_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
+        if attn_impl == 'eager':
+            # shape: (1, b * n_kv_head, head_dim)
+            k_new = k.transpose(0, 1).reshape(tgt_s, b * n_kv_head, head_dim)
+            v_new = v.transpose(0, 1).reshape(tgt_s, b * n_kv_head, head_dim)
+            # shape: (s, b * n_kv_head, head_dim)
+            k = k_cache.data[:src_s]
+            v = v_cache.data[:src_s]
+            k[src_s - 1:src_s] = k_new
+            v[src_s - 1:src_s] = v_new
 
-        seqlens = attention_mask.data.sum(dim=1, dtype=torch.int32)
-        # cache_seqlens 指示 "写入位置的索引"，对于长度为 L 的序列，新 Token 写在下标 L-1 处
-        cache_seqlens = seqlens - 1
+            # shape: (b, n_kv_head, group_size, 1, head_dim)
+            q = q.permute(0, 2, 1, 3).view(b, n_kv_head, group_size, tgt_s, head_dim)
+            # shape: (b, n_kv_head, 1, head_dim, src_s)
+            k = k.permute(1, 2, 0).reshape(b, n_kv_head, head_dim, src_s).unsqueeze(2)
+            # shape: (b, n_kv_head, 1, src_s, head_dim)
+            v = v.permute(1, 0, 2).reshape(b, n_kv_head, src_s, head_dim).unsqueeze(2)
 
-        attn_output = flash_attn_with_kvcache(
-            q=q,
-            k_cache=k_cache_view,
-            v_cache=v_cache_view,
-            k=k,
-            v=v,
-            cache_seqlens=cache_seqlens,
-            softmax_scale=scaling,
-            causal=True,
-        )
+            # Attention Score (Broadcasting happens on dim 2)
+            # (b, n_kv_head, group, 1, d) @ (b, n_kv_head, 1, d, s)
+            # -> (b, n_kv_head, group, 1, s)
+            attn_weights = torch.matmul(q, k) * scaling
+
+            # shape: (b, 1, 1, s)
+            mask = attention_mask.data.view(b, 1, 1, src_s)
+            # shape: (b * n_head, 1, s)
+            attn_weights = attn_weights.view(b, n_head, 1, src_s)
+            attn_weights = torch.where(mask, attn_weights, float('-inf'))
+            attn_weights = attn_weights.view(b * n_head, 1, src_s)
+            attn_weights = F.softmax(attn_weights, dim=2, dtype=torch.float32).to(inputs.dtype)
+            # shape: (b, n_kv_head, group_size, 1, s)
+            attn_weights = attn_weights.view(b, n_kv_head, group_size, tgt_s, src_s)
+
+            # save attn_weights for analysis
+            save_attn_weights = attn_weights.clone()
+
+            # (b, n_kv_head, group, 1, s) @ (b, n_kv_head, 1, s, d)
+            # -> (b, n_kv_head, group, 1, d)
+            attn_output = torch.matmul(attn_weights, v).view(b, n_head, tgt_s, head_dim)
+            # shape: (b, 1, n_head, head_dim)
+            attn_output = attn_output.transpose(1, 2)
+
+        elif attn_impl == 'flash_attn':
+            # k_cache shape: (max_seq, b * n_kv_head, head_dim)
+            max_seq_len = k_cache.data.shape[0]
+            # (S, B*N, D) -> (S, B, N, D) -> (B, S, N, D)
+            k_cache_view = k_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
+            v_cache_view = v_cache.data.view(max_seq_len, b, n_kv_head, head_dim).permute(1, 0, 2, 3)
+
+            seqlens = attention_mask.data.sum(dim=1, dtype=torch.int32)
+            # cache_seqlens 指示 "写入位置的索引"，对于长度为 L 的序列，新 Token 写在下标 L-1 处
+            cache_seqlens = seqlens - 1
+
+            attn_output = flash_attn_with_kvcache(
+                q=q,
+                k_cache=k_cache_view,
+                v_cache=v_cache_view,
+                k=k,
+                v=v,
+                cache_seqlens=cache_seqlens,
+                softmax_scale=scaling,
+                causal=True,
+            )
+
+        else:
+            raise ValueError(f"Unknown attention implementation: {attn_impl}. Supported: eager, flash_attn.")
 
         # (b, 1, n, d) -> (b, 1, h)
         output = attn_output.reshape(b, tgt_s, h)

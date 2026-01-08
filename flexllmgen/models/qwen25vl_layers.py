@@ -352,7 +352,8 @@ class Qwen2_5_VLAttention(SelfAttention):
                     b_q, w_k, b_k, w_v, b_v, w_out, w_ln, n_head, n_kv_head,
                     k_cache, v_cache, donate, self.policy.attn_sparsity,
                     self.policy.compress_cache, self.policy.comp_cache_config,
-                    self.config.rms_norm_eps, position_embeddings, self.config.rope_scaling_mrope_section)
+                    self.config.rms_norm_eps, position_embeddings, self.config.rope_scaling_mrope_section,
+                    self.policy.attn_impl)
             cache_write_buf.store((new_k_cache, new_v_cache))
 
         hidden.val = h
