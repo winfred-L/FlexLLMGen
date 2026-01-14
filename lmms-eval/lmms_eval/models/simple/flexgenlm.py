@@ -180,11 +180,11 @@ class FlexGenLM(lmms):
                     current_gen_kwargs["do_sample"] = True if gen_kwargs["temperature"] > 0 else False
                 
             
-                # generate output
-                print("Inputs:\n" + 70 * '-')
-                print(f"video: {video_path}")
-                print(f"question: {question}")
-                print(70 * '-' + "\n")
+                # # generate output
+                # print("Inputs:\n" + 70 * '-')
+                # print(f"video: {video_path}")
+                # print(f"question: {question}")
+                # print(70 * '-' + "\n")
                 # import pdb; pdb.set_trace()
 
                 with torch.inference_mode():
@@ -205,9 +205,9 @@ class FlexGenLM(lmms):
                 results.append(outputs[0])
                 pbar.update(1)
 
-                print("Output:\n" + 70 * '-')
-                print(outputs[0])
-                print(70 * '-' + "\n")
+                # print("Output:\n" + 70 * '-')
+                # print(outputs[0])
+                # print(70 * '-' + "\n")
                 # import pdb; pdb.set_trace()
         
         except Exception as e:
