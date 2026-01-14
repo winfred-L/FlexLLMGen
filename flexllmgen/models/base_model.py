@@ -395,7 +395,8 @@ class BaseFlexLM(ABC):
             self.env.cpu.del_attention_compute_workspace()
 
         # print memory stats
-        self.print_memory_stats()
+        if debug_mode == "breakdown":
+            self.print_memory_stats()
 
         return self.output_ids
     

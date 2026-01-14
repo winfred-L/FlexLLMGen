@@ -63,7 +63,7 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     assert not (args.compress_cache and args.attn_sparsity < 1.0), "Not implemented"
 
     # 1. 根据模型名称加载 Processor
-    if args.model == 'qwen25vl-7b':
+    if args.model_type == 'qwen25vl-7b':
         model_path = "/data/lyc/models/Qwen2.5-VL-7B-Instruct"
         max_pixels: int = 16384*28*28
         min_pixels: int = 32*28*28
@@ -73,11 +73,11 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
             min_pixels=min_pixels,
             use_fast=True
         )
-        model_config = get_qwen25vl_config(args.model)
-    elif args.model == 'qwen3vl-8b':
+        model_config = get_qwen25vl_config(args.model_type)
+    elif args.model_type == 'qwen3vl-8b':
         model_path = "/data/lyc/models/Qwen3-VL-8B-Instruct"
         processor = AutoProcessor.from_pretrained(model_path)
-        model_config = get_qwen3vl_config(args.model)
+        model_config = get_qwen3vl_config(args.model_type)
 
     # 2. 准备输入数据
     video_fps = 1.0
@@ -96,7 +96,7 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
         }
     ]
     
-    if args.model == 'qwen25vl-7b':
+    if args.model_type == 'qwen25vl-7b':
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
@@ -109,7 +109,7 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
             return_tensors="pt",
             **video_kwargs,
         )
-    elif args.model == 'qwen3vl-8b':
+    elif args.model_type == 'qwen3vl-8b':
         inputs = processor.apply_chat_template(
             messages,
             tokenize=True,
@@ -139,10 +139,10 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
                     args.do_sparse, args.threshold_S, args.threshold_D)
     
     # 4. 模型初始化
-    if args.model == 'qwen25vl-7b':
-        model = Qwen25VLFlexLM(args.model, env, args.path, policy)
-    elif args.model == 'qwen3vl-8b':
-        model = Qwen3VLFlexLM(args.model, env, args.path, policy)
+    if args.model_type == 'qwen25vl-7b':
+        model = Qwen25VLFlexLM(args.model_type, env, args.path, policy)
+    elif args.model_type == 'qwen3vl-8b':
+        model = Qwen3VLFlexLM(args.model_type, env, args.path, policy)
 
     # 5. 模型推理
     try:
@@ -196,8 +196,8 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
 
 def add_parser_arguments(parser):
     # ===== 模型设置 =====
-    parser.add_argument("--model", type=str, default="qwen25vl-7b",
-        choices=['opt-1.3b', 'qwen25vl-7b', 'qwen3vl-8b'],
+    parser.add_argument("--model-type", type=str, default="qwen25vl-7b",
+        choices=['qwen25vl-7b', 'qwen3vl-8b'],
         help="The model name.")
     parser.add_argument("--path", type=str, default="/data/lyc/models",
         help="The path to the model weights.")
@@ -265,10 +265,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     assert len(args.percent) == 6
 
-    # args.cuda_device = "cuda:1"
-
-    # args.model = "qwen25vl-7b"
-    args.model = "qwen3vl-8b"
+    # args.model_type = "qwen25vl-7b"
+    # args.model_type = "qwen3vl-8b"
 
     # args.percent = [100, 0, 0, 100, 100, 0] # all cache to cpu
     # args.percent = [100, 0, 0, 0, 100, 0] # all cache to disk
@@ -300,7 +298,7 @@ if __name__ == "__main__":
 
     # 重定向print()到log文件
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_file = f'./logs/{args.model}-{timestamp}.txt'
+    output_file = f'./logs/{args.model_type}-{timestamp}.txt'
     log_file = open(output_file, 'w', encoding='utf-8')
     sys.stdout = log_file
     # sys.stderr = log_file
@@ -309,9 +307,9 @@ if __name__ == "__main__":
     print_args(args)
 
     # 项目入口
-    if args.model == 'qwen25vl-7b':
+    if args.model_type == 'qwen25vl-7b':
         run_flexllmgen_qwen(args, video_path=video_path, question=question)
-    elif args.model == 'qwen3vl-8b':
+    elif args.model_type == 'qwen3vl-8b':
         run_flexllmgen_qwen(args, video_path=video_path, question=question)
     else:
-        raise ValueError(f"Unsupported model: {args.model}")
+        raise ValueError(f"Unsupported model: {args.model_type}")
