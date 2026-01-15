@@ -57,7 +57,7 @@ dependencies = [
     "pillow",
     "pyyaml",
     "sympy",
-    "latex2sympy2",
+    "latex2sympy2-extended",
     "mpmath",
     "Jinja2",
     "openpyxl",
