@@ -63,21 +63,20 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     assert not (args.compress_cache and args.attn_sparsity < 1.0), "Not implemented"
 
     # 1. 根据模型名称加载 Processor
+    max_pixels: int = 16384*28*28
+    min_pixels: int = 32*28*28
     if args.model_type == 'qwen25vl-7b':
         model_path = "/data/lyc/models/Qwen2.5-VL-7B-Instruct"
-        max_pixels: int = 16384*28*28
-        min_pixels: int = 32*28*28
-        processor = AutoProcessor.from_pretrained(
-            model_path,
-            max_pixels=max_pixels,
-            min_pixels=min_pixels,
-            use_fast=True
-        )
         model_config = get_qwen25vl_config(args.model_type)
     elif args.model_type == 'qwen3vl-8b':
         model_path = "/data/lyc/models/Qwen3-VL-8B-Instruct"
-        processor = AutoProcessor.from_pretrained(model_path)
         model_config = get_qwen3vl_config(args.model_type)
+    processor = AutoProcessor.from_pretrained(
+        model_path,
+        max_pixels=max_pixels,
+        min_pixels=min_pixels,
+        use_fast=True
+    )
 
     # 2. 准备输入数据
     video_fps = 1.0
@@ -96,6 +95,7 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
         }
     ]
     
+    # TODO: 合并
     if args.model_type == 'qwen25vl-7b':
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True

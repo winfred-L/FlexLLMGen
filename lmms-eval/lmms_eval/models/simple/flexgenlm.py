@@ -58,8 +58,8 @@ class FlexGenLM(lmms):
                     v = float(v)
                 setattr(args, k, v)
 
-        args.gpu_batch_size = 1
-        args.num_gpu_batches = 1
+        assert args.gpu_batch_size == 1
+        assert args.num_gpu_batches == 1
 
         # initialize processor
         if args.model_type == 'qwen25vl-7b':

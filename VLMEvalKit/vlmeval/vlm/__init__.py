@@ -116,3 +116,5 @@ from .logics import Logics_Thinking
 from .cosmos import Cosmos
 from .liquid import LFM2VL
 from .insight_v import InsightV
+
+from .flexgenlm import FlexGenLM
