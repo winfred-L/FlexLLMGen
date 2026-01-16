@@ -2,6 +2,8 @@
 
 ## Installation
 
+Step 1.
+
 ```bash
 conda create -n flexgen python=3.12 -y
 conda activate flexgen
@@ -19,6 +21,10 @@ pip install -e .
 cd ..
 pip install -e .
 ```
+
+Step 2.
+
+set up `.env`.
 
 
 ## download

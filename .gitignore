@@ -36,3 +36,6 @@ today_job.sh
 
 # log
 logs/
+
+# env
+.env

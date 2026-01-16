@@ -1,25 +1,21 @@
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 import torch
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
-# default: Load the model on the available device(s)
-# model = Qwen3VLForConditionalGeneration.from_pretrained(
-#     "/data/lyc/models/Qwen3-VL-8B-Instruct", dtype="auto", device_map="auto"
-# )
-
 device = "cuda:0"
 model = Qwen3VLForConditionalGeneration.from_pretrained(
-    "/data/lyc/models/Qwen3-VL-8B-Instruct",
+    "Qwen/Qwen3-VL-8B-Instruct",
     dtype=torch.bfloat16,
-    attn_implementation="eager",
+    attn_implementation="flash_attention_2",
 ).to(device).eval()
 
-processor = AutoProcessor.from_pretrained("/data/lyc/models/Qwen3-VL-8B-Instruct")
+processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-8B-Instruct")
 
 
 video_fps = 1.0
-video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
-# video_path = "/data/lyc/datasets/Video-MME/video/zNxi2s36tS0.mp4" #43s
-# video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
+video_path = "./test/video/28s.mp4"
 question = 'Please describe this video in detail.'
 messages = [
     {
