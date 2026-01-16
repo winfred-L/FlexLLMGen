@@ -1,8 +1,12 @@
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 
 import argparse
+import os
 import sys
 from datetime import datetime
 
@@ -66,10 +70,12 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     max_pixels: int = 16384*28*28
     min_pixels: int = 32*28*28
     if args.model_type == 'qwen25vl-7b':
-        model_path = "/data/lyc/models/Qwen2.5-VL-7B-Instruct"
+        # model_path = "/data/lyc/models/Qwen2.5-VL-7B-Instruct"
+        model_path = "Qwen/Qwen2.5-VL-7B-Instruct"
         model_config = get_qwen25vl_config(args.model_type)
     elif args.model_type == 'qwen3vl-8b':
-        model_path = "/data/lyc/models/Qwen3-VL-8B-Instruct"
+        # model_path = "/data/lyc/models/Qwen3-VL-8B-Instruct"
+        model_path = "Qwen/Qwen3-VL-8B-Instruct"
         model_config = get_qwen3vl_config(args.model_type)
     processor = AutoProcessor.from_pretrained(
         model_path,
@@ -123,7 +129,7 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     # 3. 准备执行环境
     gpu = TorchDevice(args.cuda_device)
     cpu = TorchDevice("cpu")
-    disk = TorchDisk(args.offload_dir)
+    disk = TorchDisk(os.getenv('OFFLOAD_DIR'))
     env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
 
     # 3. 将命令行参数转换为 Policy 策略对象
@@ -200,9 +206,9 @@ def add_parser_arguments(parser):
         choices=['qwen25vl-7b', 'qwen3vl-8b'],
         help="The model name.")
     parser.add_argument("--path", type=str, default="/data/lyc/models",
-        help="The path to the model weights.")
+        help="The path to the model weights.") # TODO: 实际弃用，待删除
     parser.add_argument("--offload-dir", type=str, default="/data1/lyc/flexllmgen_offload_dir",
-        help="The directory to offload tensors. ") # disk 卸载目录
+        help="The directory to offload tensors. ") # TODO: 实际弃用，待删除
     parser.add_argument("--sep-layer", type=bool, default=True) # 是否将 Attention 层和 MLP 层作为两个独立层处理
     parser.add_argument("--pin-weight", type=bool, default=True) # 是否将权重锁页到内存以加快 CPU 访问速度
     parser.add_argument("--overlap", type=bool, default=False) # 是否开启计算与数据传输重叠
@@ -287,12 +293,7 @@ if __name__ == "__main__":
     args.do_sparse = False
 
 
-    video_path = "/data/lyc/datasets/Video-MME/video/ZHWZf1Z4B5k.mp4" #28s
-    # video_path = "/data/lyc/datasets/Video-MME/video/zNxi2s36tS0.mp4" #43s
-    # video_path = "/data/lyc/datasets/Video-MME/video/Z-rHofd6g2Q.mp4" #66s
-    # video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_game_1.mp4" #5min16s
-    # video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_food_3.mp4" #6min51s
-    # video_path = "/data1/lyc/datasets/mlvu_test/MLVU_Test/video/test_AWB-6.mp4" #7min30s
+    video_path = "./test/video/28s.mp4"
     
     question = "Please describe this video in detail."
 
