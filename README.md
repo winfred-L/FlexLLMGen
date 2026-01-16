@@ -37,7 +37,7 @@ hf auth login
 
 # optional: manually download datasets
 export HF_ENDPOINT="https://hf-mirror.com"
-hf download Qwen/Qwen2.5-7B-Instruct
+hf download Qwen/Qwen2.5-VL-7B-Instruct
 hf download Qwen/Qwen3-VL-8B-Instruct
 hf download lmms-lab/VideoChatGPT --repo-type dataset
 hf download OpenGVLab/MVBench --repo-type dataset
