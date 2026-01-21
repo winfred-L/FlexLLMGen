@@ -43,12 +43,18 @@ def ensure_image_url(image: str) -> str:
     raise ValueError(f'Invalid image: {image}')
 
 
+# def ensure_video_url(video: str) -> str:
+#     prefixes = ['http://', 'https://', 'file://', 'data:video']
+#     if any(video.startswith(prefix) for prefix in prefixes):
+#         return video
+#     if os.path.exists(video):
+#         return 'file://' + video
+#     raise ValueError(f'Invalid video: {video}')
+
+# processor.apply_chat_template() 不接受file开头的路径, 所以直接使用绝对路径
 def ensure_video_url(video: str) -> str:
-    prefixes = ['http://', 'https://', 'file://', 'data:video']
-    if any(video.startswith(prefix) for prefix in prefixes):
-        return video
     if os.path.exists(video):
-        return 'file://' + video
+        return video
     raise ValueError(f'Invalid video: {video}')
 
 
@@ -208,16 +214,6 @@ class FlexGenLM(BaseModel):
             return_dict=True,
             return_tensors="pt"
         )
-
-        import pdb; pdb.set_trace()
-
-        try:
-            inputs = inputs.to(self.model.device)
-            if hasattr(self.model, 'dtype'):
-                inputs = inputs.to(self.model.dtype)
-        except Exception:
-            inputs = inputs.to('cuda')
-
 
         # inference
         generated_ids = self.model.generate(
