@@ -70,12 +70,12 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     max_pixels: int = 16384*28*28
     min_pixels: int = 32*28*28
     if args.model_type == 'qwen25vl-7b':
-        # model_path = "/data/lyc/models/Qwen2.5-VL-7B-Instruct"
-        model_path = "Qwen/Qwen2.5-VL-7B-Instruct"
+        model_path = "/data/lyc/models/Qwen2.5-VL-7B-Instruct"
+        # model_path = "Qwen/Qwen2.5-VL-7B-Instruct"
         model_config = get_qwen25vl_config(args.model_type)
     elif args.model_type == 'qwen3vl-8b':
-        # model_path = "/data/lyc/models/Qwen3-VL-8B-Instruct"
-        model_path = "Qwen/Qwen3-VL-8B-Instruct"
+        model_path = "/data/lyc/models/Qwen3-VL-8B-Instruct"
+        # model_path = "Qwen/Qwen3-VL-8B-Instruct"
         model_config = get_qwen3vl_config(args.model_type)
     processor = AutoProcessor.from_pretrained(
         model_path,
@@ -206,7 +206,7 @@ def add_parser_arguments(parser):
         choices=['qwen25vl-7b', 'qwen3vl-8b'],
         help="The model name.")
     parser.add_argument("--path", type=str, default="/data/lyc/models",
-        help="The path to the model weights.") # TODO: 实际弃用，待删除
+        help="The path to the model weights.") # TODO: 改为自动使用hf路径 #实际弃用，待删除
     parser.add_argument("--offload-dir", type=str, default="/data1/lyc/flexllmgen_offload_dir",
         help="The directory to offload tensors. ") # TODO: 实际弃用，待删除
     parser.add_argument("--sep-layer", type=bool, default=True) # 是否将 Attention 层和 MLP 层作为两个独立层处理
@@ -284,13 +284,13 @@ if __name__ == "__main__":
     | args.overlap = False | generation_loop_normal()               | generation_loop_debug_normal()               |
     | args.overlap = True  | generation_loop_overlap_single_batch() | generation_loop_debug_overlap_single_batch() |
     '''
-    args.debug_mode = 'breakdown'
-    args.overlap = True
+    # args.debug_mode = 'breakdown'
+    # args.overlap = True
 
     # args.attn_impl = "eager"  # only for no sparse
 
     # only for generation_loop_overlap_single_batch()
-    args.do_sparse = False
+    # args.do_sparse = False
 
 
     video_path = "./test/video/28s.mp4"
