@@ -150,6 +150,13 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     elif args.model_type == 'qwen3vl-8b':
         model = Qwen3VLFlexLM(args.model_type, env, args.path, policy)
 
+
+    # used for analyse attn weight
+    if args.attn_impl == 'eager':
+        vision_info = model.get_video_info(inputs)
+        print(vision_info)
+
+
     # 5. 模型推理
     try:
         # Warmup：先跑一次短生成进行预热

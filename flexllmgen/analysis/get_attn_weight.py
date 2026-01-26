@@ -23,7 +23,6 @@ if __name__ == "__main__":
 
     video_id = '28s'
     video_path = "./test/video/28s.mp4"
-
     question = "Please describe this video in detail."
 
     utils.total_attn_weight.setup(args.model_type, video_id)
@@ -39,3 +38,4 @@ if __name__ == "__main__":
 
     # 保存attn_weight
     utils.total_attn_weight.save()
+    print(f'max step: {utils.total_attn_weight.max_step}')

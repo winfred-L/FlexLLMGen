@@ -514,6 +514,7 @@ class CaptureAttnWeight:
     '''
     save_path: str
     data: dict
+    max_step: int
 
     def __init__(self):
         self.save_path = None
@@ -526,6 +527,8 @@ class CaptureAttnWeight:
 
     def add(self, attn_weight, layer, step):
         self.data[f'layer{layer}_step{step}'] = attn_weight
+        if step > self.max_step:
+            self.max_step = step
 
     def save(self):
         torch.save(self.data, self.save_path)
@@ -534,6 +537,6 @@ class CaptureAttnWeight:
         self.data = torch.load(self.save_path)
 
     def get(self, layer, step):
-        return self.data[f'layer{layer}_step{step}']
+        return self.data.get(f'layer{layer}_step{step}')
     
 total_attn_weight = CaptureAttnWeight()
