@@ -499,3 +499,41 @@ def read_benchmark_log(filename):
         decode_latency, decode_throughput,
         total_latency, total_throughput,
     )
+
+
+
+class CaptureAttnWeight:
+    '''
+    Usage:
+    SAVE: init -> setup -> add -> save
+    LOAD: init -> setup -> load
+
+    Note:
+    layer range from 0, step range from 1.
+    attn_weight shape: (n_head, seq)
+    '''
+    save_path: str
+    data: dict
+
+    def __init__(self):
+        self.save_path = None
+        self.data = {}
+        self.max_step = 0
+
+    def setup(self, model_type, video_id):
+        save_dir = '/data1/lyc/flexllmgen_outputs/attn_weight'
+        self.save_path = f'{save_dir}/{model_type}_{video_id}.pt'
+
+    def add(self, attn_weight, layer, step):
+        self.data[f'layer{layer}_step{step}'] = attn_weight
+
+    def save(self):
+        torch.save(self.data, self.save_path)
+
+    def load(self):
+        self.data = torch.load(self.save_path)
+
+    def get(self, layer, step):
+        return self.data[f'layer{layer}_step{step}']
+    
+total_attn_weight = CaptureAttnWeight()

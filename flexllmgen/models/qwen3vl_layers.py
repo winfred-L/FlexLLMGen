@@ -80,7 +80,7 @@ class Qwen3VLTextAttention(Qwen2_5_VLAttention):
             if self.policy.do_sparse: # sparse attention
                 mask, donate[1] = attention_mask.val.smart_copy(self.attention_compute)
                 (k_cache, donate[9]), (v_cache, donate[10]) = cache_read_buf.pop()
-                h, new_k_cache, new_v_cache = self.compute.qwen3vl_gqa_gen_sparse(h, mask, w_q,
+                h, new_k_cache, new_v_cache, _ = self.compute.qwen3vl_gqa_gen_sparse(h, mask, w_q,
                     w_k, w_v, w_out, q_ln, k_ln, w_ln, n_head, n_kv_head,
                     k_cache, v_cache, donate, self.policy.attn_sparsity,
                     self.policy.compress_cache, self.policy.comp_cache_config,
@@ -89,12 +89,17 @@ class Qwen3VLTextAttention(Qwen2_5_VLAttention):
             else: # dense attention
                 mask, donate[1] = attention_mask.val.smart_copy(self.attention_compute)
                 (k_cache, donate[9]), (v_cache, donate[10]) = cache_read_buf.pop()
-                h, new_k_cache, new_v_cache = self.compute.qwen3vl_gqa_gen(h, mask, w_q,
+                h, new_k_cache, new_v_cache, attn_weight = self.compute.qwen3vl_gqa_gen(h, mask, w_q,
                     w_k, w_v, w_out, q_ln, k_ln, w_ln, n_head, n_kv_head,
                     k_cache, v_cache, donate, self.policy.attn_sparsity,
                     self.policy.compress_cache, self.policy.comp_cache_config,
                     self.config.rms_norm_eps, position_embeddings, self.policy.attn_impl)
                 cache_write_buf.store((new_k_cache, new_v_cache))
+
+                # comment manually
+                import flexllmgen.utils as utils
+                utils.total_attn_weight.add(attn_weight.detach().cpu(), self.layer_id, i)
+
 
         hidden.val = h
 

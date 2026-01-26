@@ -223,7 +223,7 @@ def add_parser_arguments(parser):
          "the percentage of activations on CPU")
     parser.add_argument("--attn-impl", type=str, default="flash_attn",
         choices=["eager", "flash_attn"],
-        help="The attention implementation to use.")
+        help="The attention implementation to use.") # eager will save attn_weight to file
     
     # ===== 推理设置 =====
     parser.add_argument("--cuda-device", type=str, default='cuda:0')

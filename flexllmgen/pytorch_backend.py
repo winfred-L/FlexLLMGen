@@ -822,6 +822,8 @@ class TorchDevice:
 
             # save attn_weights for analysis
             save_attn_weights = attn_weights.clone()
+            # shape: (n_head, seq)
+            save_attn_weights = save_attn_weights.view(b, n_kv_head * group_size, tgt_s, src_s).squeeze()
 
             # (b, n_kv_head, group, 1, s) @ (b, n_kv_head, 1, s, d)
             # -> (b, n_kv_head, group, 1, d)
@@ -851,6 +853,8 @@ class TorchDevice:
                 causal=True,
             )
 
+            save_attn_weights = None
+
         else:
             raise ValueError(f"Unknown attention implementation: {attn_impl}. Supported: eager, flash_attn.")
 
@@ -870,7 +874,7 @@ class TorchDevice:
         save_k = TorchTensor.create_from_torch(save_k, self)
         save_v = TorchTensor.create_from_torch(save_v, self)
 
-        return TorchTensor.create_from_torch(output, self), save_k, save_v
+        return TorchTensor.create_from_torch(output, self), save_k, save_v, save_attn_weights
     
 
     def qwen25vl_gqa_gen_sparse(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
@@ -969,6 +973,8 @@ class TorchDevice:
 
             # save attn_weights for analysis
             save_attn_weights = attn_weights.clone()
+            # shape: (n_head, seq)
+            save_attn_weights = save_attn_weights.view(b, n_kv_head * group_size, tgt_s, src_s).squeeze()
 
             # (b, n_kv_head, group, 1, s) @ (b, n_kv_head, 1, s, d)
             # -> (b, n_kv_head, group, 1, d)
@@ -998,6 +1004,8 @@ class TorchDevice:
                 causal=True,
             )
 
+            save_attn_weights = None
+
         else:
             raise ValueError(f"Unknown attention implementation: {attn_impl}. Supported: eager, flash_attn.")
 
@@ -1017,7 +1025,7 @@ class TorchDevice:
         save_k = TorchTensor.create_from_torch(save_k, self)
         save_v = TorchTensor.create_from_torch(save_v, self)
 
-        return TorchTensor.create_from_torch(output, self), save_k, save_v
+        return TorchTensor.create_from_torch(output, self), save_k, save_v, save_attn_weights
     
     def qwen3vl_gqa_gen_sparse(self, inputs, attention_mask, w_q, w_k, w_v,
                 w_out, q_ln, k_ln, w_ln, n_head, n_kv_head, k_cache, v_cache, donate,
