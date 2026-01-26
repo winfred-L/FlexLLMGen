@@ -290,7 +290,7 @@ if __name__ == "__main__":
     # args.attn_impl = "eager"  # only for no sparse
 
     # only for generation_loop_overlap_single_batch()
-    # args.do_sparse = False
+    args.do_sparse = True
 
 
     video_path = "./test/video/28s.mp4"

@@ -84,7 +84,7 @@ class Qwen3VLTextAttention(Qwen2_5_VLAttention):
                     w_k, w_v, w_out, q_ln, k_ln, w_ln, n_head, n_kv_head,
                     k_cache, v_cache, donate, self.policy.attn_sparsity,
                     self.policy.compress_cache, self.policy.comp_cache_config,
-                    self.config.rms_norm_eps, position_embeddings)
+                    self.config.rms_norm_eps, position_embeddings, self.policy.attn_impl)
                 cache_write_buf.store((new_k_cache, new_v_cache))
             else: # dense attention
                 mask, donate[1] = attention_mask.val.smart_copy(self.attention_compute)
