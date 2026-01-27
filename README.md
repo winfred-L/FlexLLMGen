@@ -51,3 +51,7 @@ modify `lmms-eval/lmms_eval/models/__init__.py` with a new line, to add `flexgen
 
 add `VLMEvalKit/vlmeval/vlm/flexgenlm.py`
 modify `VLMEvalKit/vlmeval/vlm/__init__.py` with a new line, to add `flexgenlm`
+
+modify `VLMEvalKit/vlmeval/dataset/mvbench.py` to add class `MVBench_MP4_CoT`
+modify `VLMEvalKit/vlmeval/dataset/video_dataset_config.py` to add `MVBench_MP4_CoT_1fps`
+modify `VLMEvalKit/vlmeval/dataset/__init__.py` to add `MVBench_MP4_CoT`

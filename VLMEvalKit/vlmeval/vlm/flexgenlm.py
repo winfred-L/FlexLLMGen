@@ -207,6 +207,8 @@ class FlexGenLM(BaseModel):
         messages = []
         messages.append({'role': 'user', 'content': self._prepare_content(message, dataset=dataset)})
 
+        # print(messages) ### DEBUG
+
         inputs = self.processor.apply_chat_template(
             messages,
             tokenize=True,
@@ -232,6 +234,9 @@ class FlexGenLM(BaseModel):
             generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
         response = out[0]
+
+        # print(response) ### DEBUG
+
         return response
     
 

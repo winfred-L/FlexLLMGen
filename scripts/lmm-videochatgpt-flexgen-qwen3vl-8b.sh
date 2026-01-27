@@ -15,6 +15,6 @@ accelerate launch --num_processes 1 --main_process_port 12345 -m lmms_eval \
     --tasks videochatgpt \
     --batch_size 1 \
     --log_samples \
-    --output_path /data1/lyc/flexllmgen_outputs/logs/ \
+    --output_path /data1/lyc/flexllmgen_outputs/lmm-videochatgpt-flexgen-qwen3vl-8b-limit1/ \
     --limit 1 \
     --verbosity DEBUG

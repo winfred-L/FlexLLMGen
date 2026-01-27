@@ -25,6 +25,8 @@ mvbench_dataset = {
     # MVBench not support fps, but MVBench_MP4 does
     'MVBench_MP4_8frame': partial(MVBench_MP4, dataset='MVBench_MP4', nframe=8),
     'MVBench_MP4_1fps': partial(MVBench_MP4, dataset='MVBench_MP4', fps=1.0),
+    # added
+    'MVBench_MP4_CoT_1fps': partial(MVBench_MP4_CoT, dataset='MVBench_MP4', fps=1.0),
 }
 
 tamperbench_dataset = {

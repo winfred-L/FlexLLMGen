@@ -234,7 +234,7 @@ def add_parser_arguments(parser):
     
     # ===== 推理设置 =====
     parser.add_argument("--cuda-device", type=str, default='cuda:0')
-    parser.add_argument("--gen-len", type=int, default=512) # 生成的最大新 Token 数量
+    parser.add_argument("--gen-len", type=int, default=50000) # 生成的最大新 Token 数量
     parser.add_argument("--do-sample", type=bool, default=False)
     parser.add_argument("--temperature", type=float, default=0.000001)
     parser.add_argument("--debug-mode", type=str, default=None, choices=["fewer_batch", "breakdown"])

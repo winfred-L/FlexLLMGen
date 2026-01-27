@@ -12,6 +12,7 @@ import cv2
 import zipfile
 import os
 import glob
+import re
 from .utils.mvbench import *
 
 FAIL_MSG = 'Failed to obtain answer via API.'
@@ -661,6 +662,93 @@ Based on your observations, select the best option that accurately addresses the
                 f'failed to obtain the score for another {len(rejected)} questions. '
                 f'Those questions will be counted as -1 score in ALL rating, and will not be counted in VALID rating.'
             )
+
+            dump(data, score_file)
+
+        rating = get_dimension_rating(score_file)
+        dump(rating, tgt_file)
+        return rating
+
+
+# modify MVBench_MP4 to add CoT answer
+class MVBench_MP4_CoT(MVBench_MP4):
+    
+    SYS = """Carefully watch the video and pay attention to the cause and sequence of events, \
+the detail and movement of objects, and the action and pose of persons. \
+Based on your observations, you need to provide a video summary, explain your reasoning, \
+and finally select the best option. \
+please provide the output in the following format:
+1. Video Summary: Describe what happens in the video.
+2. Reasoning: Analyze why the option is correct.
+3. Best Option: The final choice, strictly in the format like (A).
+"""
+
+    def __init__(self, dataset='MVBench_MP4', nframe=0, fps=-1):
+        super().__init__(dataset=dataset, nframe=nframe, fps=fps)
+
+    def build_prompt(self, line, video_llm):
+        message = super().build_prompt(line, video_llm)
+
+        # modify system prompt
+        message[0] = dict(type='text', value=self.SYS, role='system')
+
+        # modify assistant guide
+        if message[-1]['role'] == 'assistant':
+            message.pop() 
+        if message[-1]['value'] == '\nOnly give the best option.':
+            message.pop()
+        message.append(dict(type='text', value='\nPlease answer strictly following the "1. Video Summary 2. Reasoning 3. Best Option" format.'))
+        message.append(dict(type='text', value='Response:\n1. Video Summary:', role='assistant'))
+        
+        return message
+    
+    @classmethod
+    def evaluate(cls, eval_file, **judge_kwargs):
+        # exact matching, set judge model to None
+        judge_kwargs['model'] = None 
+        
+        score_file = get_intermediate_file_path(eval_file, '_score')
+        tgt_file = get_intermediate_file_path(eval_file, '_rating', 'json')
+        
+        if not osp.exists(score_file):
+            data = load(eval_file)
+            data_un = data[~pd.isna(data['prediction'])]
+            
+            for idx in data_un['index']:
+                pred_raw = data.loc[data['index'] == idx, 'prediction'].values[0]
+                
+                # --- Core Modificatioin ---
+                # find patterns like "Best Option: (A)" or "3. Best Option: (A)"
+                extract_pattern = r"(?:Best Option|Option)[\s:.]+(\([A-Z]\))"
+                match = re.search(extract_pattern, pred_raw, re.IGNORECASE)
+                
+                if match:
+                    pred_extracted = match.group(1)
+                else:
+                    pred_extracted = pred_raw
+                # ---------------------------
+
+                ans = data.loc[data['index'] == idx, 'answer'].values[0]
+                input_item = data.loc[data['index'] == idx].to_dict(orient='records')[0]
+                
+                options = eval(input_item['candidates'])
+                answer_idx = -1
+                for id, c in enumerate(options):
+                    if c == ans:
+                        answer_idx = id
+                ans_formatted = f"({chr(ord('A') + answer_idx)}) {ans}"
+                
+                for id, option_content in enumerate(options):
+                    input_item[chr(ord('A') + id)] = option_content
+
+                score = check_ans_with_model(
+                    pred_extracted, 
+                    ans_formatted, 
+                    None,
+                    input_item,
+                    'MVBench'
+                )
+                data.loc[idx, 'score'] = int(score)
 
             dump(data, score_file)
 

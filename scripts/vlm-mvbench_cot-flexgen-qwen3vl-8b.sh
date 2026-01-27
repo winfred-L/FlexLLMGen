@@ -8,5 +8,5 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 PROJ_ROOT=$(dirname "$SCRIPT_DIR")
 
 python -m VLMEvalKit.run \
-    --config $SCRIPT_DIR/vlm-mvbench-flexgen-qwen3vl-8b.json \
+    --config $SCRIPT_DIR/vlm-mvbench_cot-flexgen-qwen3vl-8b.json \
     --work-dir /data1/lyc/flexllmgen_outputs
