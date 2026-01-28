@@ -8,7 +8,7 @@ export HF_HOME="/data1/lyc/hf_home"
 
 export CUDA_VISIBLE_DEVICES=0
 
-
+##### 还不能跑通！
 accelerate launch --num_processes 1 --main_process_port 12345 -m lmms_eval \
     --model flexgenlm \
     --model_args model-type=qwen3vl-8b \
