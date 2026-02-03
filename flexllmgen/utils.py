@@ -530,6 +530,11 @@ class CaptureAttnWeight:
         if step > self.max_step:
             self.max_step = step
 
+    def clear(self):
+        self.save_path = None
+        self.data = {}
+        self.max_step = 0
+
     def save(self):
         torch.save(self.data, self.save_path)
 

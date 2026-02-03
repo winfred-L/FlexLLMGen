@@ -357,9 +357,10 @@ class Qwen2_5_VLAttention(SelfAttention):
                     self.policy.attn_impl)
                 cache_write_buf.store((new_k_cache, new_v_cache))
 
-                # # comment manually
-                # import flexllmgen.utils as utils
-                # utils.total_attn_weight.add(attn_weight.detach().cpu(), self.layer_id, i)
+                # analyse attn weight
+                if self.policy.attn_impl == 'eager':
+                    import flexllmgen.utils as utils
+                    utils.total_attn_weight.add(attn_weight.detach().cpu(), self.layer_id, i)
 
         hidden.val = h
 

@@ -1,0 +1,11 @@
+{
+    "model": {
+        "FlexGenTestLM_Qwen3VL_8B": {
+            "class": "FlexGenTestLM",
+            "model_type": "qwen3vl-8b"
+        }
+    },
+    "data": {
+        "MVBench_MP4_CoT_1fps": {}
+    }
+}
