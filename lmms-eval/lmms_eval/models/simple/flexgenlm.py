@@ -2,6 +2,10 @@ import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 
+import os
+MAX_FRAMES = 2048
+os.environ["MAX_FRAMES"] = MAX_FRAMES
+
 import argparse
 import sys
 from datetime import datetime
@@ -75,7 +79,14 @@ class FlexGenLM(lmms):
             model_config = get_qwen25vl_config(args.model_type)
         elif args.model_type == 'qwen3vl-8b':
             model_path = "/data/lyc/models/Qwen3-VL-8B-Instruct"
-            processor = AutoProcessor.from_pretrained(model_path)
+            max_pixels: int = 224 * 1024 * 32 * 32 #16384*28*28
+            min_pixels: int = 32*28*28
+            processor = AutoProcessor.from_pretrained(
+                model_path,
+                max_pixels=max_pixels,
+                min_pixels=min_pixels,
+                use_fast=True
+            )
             model_config = get_qwen3vl_config(args.model_type)
 
         # prepare execution environment
@@ -143,6 +154,7 @@ class FlexGenLM(lmms):
                                 "video": video_path,
                                 "max_pixels": 360 * 420,
                                 "fps": 1.0,
+                                "nframes": MAX_FRAMES,
                             },
                             {"type": "text", "text": question},
                         ],
@@ -163,12 +175,25 @@ class FlexGenLM(lmms):
                         **video_kwargs,
                     )
                 elif self.args.model_type == 'qwen3vl-8b':
-                    inputs = self.processor.apply_chat_template(
-                        messages,
-                        tokenize=True,
-                        add_generation_prompt=True,
-                        return_dict=True,
-                        return_tensors="pt"
+                    # inputs = self.processor.apply_chat_template(
+                    #     messages,
+                    #     tokenize=True,
+                    #     add_generation_prompt=True,
+                    #     return_dict=True,
+                    #     return_tensors="pt"
+                    # )
+                    text = self.processor.apply_chat_template(
+                        messages, tokenize=False, add_generation_prompt=True
+                    )
+                    image_inputs, video_inputs, video_kwargs = process_vision_info(messages, return_video_kwargs=True)
+                    inputs = self.processor(
+                        text=[text],
+                        images=image_inputs,
+                        videos=video_inputs,
+                        max_frames=MAX_FRAMES,
+                        padding=True,
+                        return_tensors="pt",
+                        **video_kwargs,
                     )
 
                 # update generate kwargs
