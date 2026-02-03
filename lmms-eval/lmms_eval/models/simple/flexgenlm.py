@@ -4,7 +4,7 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 
 import os
 MAX_FRAMES = 2048
-os.environ["MAX_FRAMES"] = MAX_FRAMES
+os.environ["MAX_FRAMES"] = f"{MAX_FRAMES}"
 
 import argparse
 import sys
@@ -153,7 +153,7 @@ class FlexGenLM(lmms):
                                 "type": "video",
                                 "video": video_path,
                                 "max_pixels": 360 * 420,
-                                "fps": 1.0,
+                                # "fps": 1.0,
                                 "nframes": MAX_FRAMES,
                             },
                             {"type": "text", "text": question},
