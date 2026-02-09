@@ -264,6 +264,7 @@ class Qwen3VLFlexLM(Qwen25VLFlexLM):
             start_idx = video_token_start_idx[t] + 1
             end_idx = video_token_end_idx[t] - 1
             index_ranges.append( (start_idx, end_idx) )
+        # index_ranges = [(video_token_start_idx[0], video_token_end_idx[-1])]
 
         # print(f'{T_len=}, {H_len=}, {W_len=}')
         # print(f'{index_ranges=}')

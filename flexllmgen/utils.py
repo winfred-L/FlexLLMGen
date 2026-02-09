@@ -41,6 +41,13 @@ class VideoInfo:
     @property
     def total_len(self) -> int:
         return self.T_len * self.H_len * self.W_len
+    
+    # @property
+    # def total_len(self) -> int:
+    #     total_l = 0
+    #     for start, end in self.index_ranges:
+    #         total_l += end - start + 1
+    #     return total_l
 
 
 @dataclasses.dataclass(frozen=True)
