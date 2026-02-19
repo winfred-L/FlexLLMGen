@@ -2,9 +2,10 @@
 # warnings.simplefilter(action='ignore', category=FutureWarning)
 # warnings.simplefilter(action='ignore', category=UserWarning)
 
-import os
-MAX_FRAMES = 2048
-os.environ["MAX_FRAMES"] = f"{MAX_FRAMES}"
+# import os
+# MAX_FRAMES = 2048 # qwen2.5vl
+# MAX_FRAMES = 4096 # qwen3vl
+# os.environ["MAX_FRAMES"] = f"{MAX_FRAMES}"
 
 import argparse
 import sys
@@ -35,45 +36,42 @@ from lmms_eval.api.model import lmms
 from lmms_eval.api.instance import Instance
 
 
-# import cv2
+# import torch
+# from decord import VideoReader, gpu
 # from PIL import Image
 # import numpy as np
 
-# def get_video_frames(video_path, nframes):
-#     cap = cv2.VideoCapture(video_path)
-#     if not cap.isOpened():
-#         return []
-    
-#     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-#     # 计算采样索引：从 0 到 total_frames-1 均匀取 nframes 个点
+# def get_video_frames_as_pil(video_path, nframes):
+#     # 1. GPU 解码
+#     vr = VideoReader(video_path, ctx=gpu(0))
+#     fps = vr.get_avg_fps()
+#     total_frames = len(vr)
 #     indices = np.linspace(0, total_frames - 1, nframes, dtype=int)
     
-#     frames = []
-#     for idx in indices:
-#         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-#         ret, frame = cap.read()
-#         if not ret:
-#             break
-#         # OpenCV 是 BGR，需要转为 RGB 供 PIL/Model 使用
-#         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-#         frames.append(Image.fromarray(frame))
+#     # 2. 获取 batch (GPU NDArray)
+#     video_ndarray = vr.get_batch(indices) 
     
-#     cap.release()
-#     return frames
+#     # 3. 搬回 CPU 并转换为 PIL (process_vision_info 对 PIL 的支持最稳)
+#     # .asnumpy() 会将数据转为 [T, H, W, C] 的 uint8 数组
+#     video_np = video_ndarray.asnumpy()
+    
+#     pil_frames = [Image.fromarray(frame) for frame in video_np]
+#     return pil_frames, fps
+
 
 
 import time
-def print_timing_stats(timings):
-    total_time = sum(timings.values())
-    print("\n" + "="*50)
-    print(f"{'Step':<20} | {'Time (s)':<10} | {'Ratio (%)':<10}")
-    print("-" * 50)
-    for step, t in timings.items():
-        ratio = (t / total_time) * 100
-        print(f"{step:<20} | {t:.4f}     | {ratio:.2f}%")
-    print("-" * 50)
-    print(f"{'Total':<20} | {total_time:.4f}     | 100.00%")
-    print("="*50 + "\n")
+# def print_timing_stats(timings):
+#     total_time = sum(timings.values())
+#     print("\n" + "="*50)
+#     print(f"{'Step':<20} | {'Time (s)':<10} | {'Ratio (%)':<10}")
+#     print("-" * 50)
+#     for step, t in timings.items():
+#         ratio = (t / total_time) * 100
+#         print(f"{step:<20} | {t:.4f}     | {ratio:.2f}%")
+#     print("-" * 50)
+#     print(f"{'Total':<20} | {total_time:.4f}     | 100.00%")
+#     print("="*50 + "\n")
 
 
 
@@ -89,6 +87,7 @@ class FlexGenLM(lmms):
         args = parser.parse_args([])
 
         for k, v in kwargs.items():
+            k = k.replace('-', '_')
             if hasattr(args, k):
                 target_type = type(getattr(args, k))
                 if target_type == bool:
@@ -110,7 +109,7 @@ class FlexGenLM(lmms):
         # initialize processor
         if args.model_type == 'qwen25vl-7b':
             model_path = "/data/lyc/models/Qwen2.5-VL-7B-Instruct"
-            max_pixels: int = 16384*28*28
+            max_pixels: int = 100*1024*28*28 # 16384*28*28
             min_pixels: int = 32*28*28
             processor = AutoProcessor.from_pretrained(
                 model_path,
@@ -121,12 +120,8 @@ class FlexGenLM(lmms):
             model_config = get_qwen25vl_config(args.model_type)
         elif args.model_type == 'qwen3vl-8b':
             model_path = "/data/lyc/models/Qwen3-VL-8B-Instruct"
-            max_pixels: int = 224 * 1024 * 32 * 32 # 224K tokens     #16384*28*28
-            min_pixels: int = 32*28*28
             processor = AutoProcessor.from_pretrained(
                 model_path,
-                max_pixels=max_pixels,
-                min_pixels=min_pixels,
                 use_fast=True
             )
             model_config = get_qwen3vl_config(args.model_type)
@@ -173,14 +168,8 @@ class FlexGenLM(lmms):
         pbar = tqdm(total=len(requests), desc="Model Responding")
         try:
             for request in requests:
-                timings = {
-                    "Data Prep": 0.0, 
-                    "Preprocessing": 0.0,
-                    "Inference": 0.0,
-                    "Decoding": 0.0
-                }
-                torch.cuda.synchronize() # 确保之前任务完成
-                t0 = time.time()
+                # torch.cuda.synchronize() # 确保之前任务完成
+                # t0 = time.time()
 
                 # parse request
                 res_args = request.args
@@ -196,26 +185,48 @@ class FlexGenLM(lmms):
                 video_path = doc_to_visual(doc)
                 video_path = video_path[0] if isinstance(video_path, list) else video_path
                 print(f'{video_path=}')
-                # video_frames = get_video_frames(video_path, nframes=MAX_FRAMES)
+                # video_frames, original_fps = get_video_frames_as_pil(video_path, nframes=MAX_FRAMES)
                 question = context.replace("<image>", "").replace("<video>", "").strip()
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "video",
-                                "video": video_path,
-                                # "max_pixels": 360 * 420,
-                                # "fps": 1.0,
-                                "nframes": MAX_FRAMES,
-                            }, # 占位
-                            {"type": "text", "text": question},
-                        ],
-                    }
-                ]
+                if self.args.model_type == 'qwen25vl-7b':
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "video",
+                                    "video": video_path,
+                                    # "max_pixels": 360 * 420,
+                                    #"fps": 1.0,
+                                    "nframes": 2048,
+                                },
+                                {"type": "text", "text": question},
+                            ],
+                        }
+                    ]
+                elif self.args.model_type == 'qwen3vl-8b':
+                    messages = [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "video",
+                                    "video": video_path,
+                                    # restrict the resolution of individual frames in the video
+                                    "min_pixels": 4 * 32 * 32,
+                                    "max_pixels": 100 * 32 * 32, #256 * 32 * 32,
+                                    # limit the total number of tokens in the video
+                                    "total_pixels": 100 * 1024 * 32 * 32, # 224K tokens  #20480 * 32 * 32,
+                                    # accept either `fps` or `nframes`
+                                    #"fps": 2.0,
+                                    "nframes": 2048,
+                                },
+                                {"type": "text", "text": question},
+                            ],
+                        }
+                    ]
 
-                t1 = time.time()
-                timings["Data Prep"] = (t1 - t0)
+                # t1 = time.time()
+                # print(f"t1-t0={t1-t0}")
 
                 if self.args.model_type == 'qwen25vl-7b':
                     text = self.processor.apply_chat_template(
@@ -231,40 +242,30 @@ class FlexGenLM(lmms):
                         **video_kwargs,
                     )
                 elif self.args.model_type == 'qwen3vl-8b':
-                    inputs = self.processor.apply_chat_template(
-                        messages,
-                        tokenize=True,
-                        add_generation_prompt=True,
-                        return_dict=True,
-                        return_tensors="pt"
+                    text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                    images, videos, video_kwargs = process_vision_info(messages, image_patch_size=16, return_video_kwargs=True, return_video_metadata=True)
+
+                    # each video returns as (video_tensor, video_metadata)
+                    # split the videos and according metadatas
+                    if videos is not None:
+                        videos, video_metadatas = zip(*videos)
+                        videos, video_metadatas = list(videos), list(video_metadatas)
+                    else:
+                        video_metadatas = None
+
+                    # since qwen-vl-utils has resize the images/videos, \
+                    # we should pass do_resize=False to avoid duplicate operation in processor!
+                    inputs = self.processor(
+                        text=text,
+                        images=images,
+                        videos=videos,
+                        video_metadata=video_metadatas,
+                        return_tensors="pt",
+                        do_resize=False, # avoid duplicate resizing
+                        **video_kwargs
                     )
 
-                    # text = self.processor.apply_chat_template(
-                    #     messages, tokenize=False, add_generation_prompt=True
-                    # )
-                    # image_inputs, video_inputs, video_kwargs = process_vision_info(messages, return_video_kwargs=True)
-                    # inputs = self.processor(
-                    #     text=[text],
-                    #     images=image_inputs,
-                    #     videos=video_inputs,
-                    #     max_frames=MAX_FRAMES,
-                    #     padding=True,
-                    #     return_tensors="pt",
-                    #     **video_kwargs,
-                    # )
-
-                    # text = self.processor.apply_chat_template(
-                    #     messages, tokenize=False, add_generation_prompt=True
-                    # )
-                    # # 跳过process_vision_info，直接使用video_frames
-                    # inputs = self.processor(
-                    #     text=[text],
-                    #     images=None,
-                    #     videos=[video_frames],
-                    #     padding=True,
-                    #     return_tensors="pt",
-                    #     max_pixels=224 * 224,
-                    # )
+                print(f'{inputs.input_ids.shape=}')
 
                 # update generate kwargs
                 current_gen_kwargs = self.default_gen_kwargs.copy()
@@ -274,9 +275,9 @@ class FlexGenLM(lmms):
                     current_gen_kwargs["temperature"] = gen_kwargs["temperature"]
                     current_gen_kwargs["do_sample"] = True if gen_kwargs["temperature"] > 0 else False
 
-                torch.cuda.synchronize() # 确保数据上传GPU完成
-                t2 = time.time()
-                timings["Preprocessing"] = (t2 - t1)
+                # torch.cuda.synchronize()
+                # t2 = time.time()
+                # print(f"t2-t1={t2-t1}")
                 
             
                 # # generate output
@@ -286,7 +287,6 @@ class FlexGenLM(lmms):
                 # print(70 * '-' + "\n")
                 # import pdb; pdb.set_trace()
 
-                print(f'{inputs.input_ids.shape=}')
 
                 with torch.inference_mode():
                     output_ids = self.model.generate(
@@ -298,9 +298,9 @@ class FlexGenLM(lmms):
                         debug_mode=self.args.debug_mode,
                         cut_gen_len=self.args.cut_gen_len)
                     
-                torch.cuda.synchronize()
-                t3 = time.time()
-                timings["Inference"] = (t3 - t2)
+                # torch.cuda.synchronize()
+                # t3 = time.time()
+                # print(f"t3-t2={t3-t2}")
 
                 # decode output
                 generated_ids_trimmed = [
@@ -310,20 +310,23 @@ class FlexGenLM(lmms):
                 results.append(outputs[0])
                 pbar.update(1)
 
-                torch.cuda.synchronize()
-                t4 = time.time()
-                timings["Decoding"] = (t4 - t3)
-
-                print_timing_stats(timings)
-                # import pdb; pdb.set_trace()
+                # torch.cuda.synchronize()
+                # t4 = time.time()
+                # print(f"t4-t3={t4-t3}")
 
                 # print("Output:\n" + 70 * '-')
                 # print(outputs[0])
                 # print(70 * '-' + "\n")
                 # import pdb; pdb.set_trace()
+
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
         
         except Exception as e:
-            print(f"Error processing doc_id {doc_id}: {e}")
+            print(f"Error processing doc_id {doc_id}: {repr(e)}")
+            import traceback
+            traceback.print_exc()
             results.append("")
         
         pbar.close()

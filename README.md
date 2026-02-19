@@ -20,6 +20,23 @@ pip install -e .
 
 cd ..
 pip install -e .
+
+
+# install decord GPU version (unused?)
+git clone --recursive https://github.com/dmlc/decord
+cd decord
+mkdir build && cd build
+cmake .. -DUSE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+cd ../python
+python setup.py install
+cd /home/lyc/miniconda3/envs/flexgen/lib/python3.12/site-packages/decord/
+ln -s /home/lyc/FlexLLMGen/decord/build/libdecord.so libdecord.so
+
+
+# install torchcodec
+# https://github.com/meta-pytorch/torchcodec?tab=readme-ov-file#installing-torchcodec
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 ```
 
 Step 2.
