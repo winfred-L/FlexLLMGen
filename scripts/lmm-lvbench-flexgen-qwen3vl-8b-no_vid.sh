@@ -1,5 +1,7 @@
 export HF_ENDPOINT="https://hf-mirror.com" # clashoff
 export HF_HOME="/data1/lyc/hf_home"
+export HF_DATASETS_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 
 export CUDA_VISIBLE_DEVICES=1
 

@@ -184,7 +184,7 @@ class FlexGenLM(lmms):
                 doc = self.task_dict[task][split][doc_id]
                 video_path = doc_to_visual(doc)
                 video_path = video_path[0] if isinstance(video_path, list) else video_path
-                print(f'{video_path=}')
+                # print(f'{video_path=}')
                 # video_frames, original_fps = get_video_frames_as_pil(video_path, nframes=MAX_FRAMES)
                 question = context.replace("<image>", "").replace("<video>", "").strip()
                 if self.args.model_type == 'qwen25vl-7b':
@@ -265,7 +265,7 @@ class FlexGenLM(lmms):
                         **video_kwargs
                     )
 
-                print(f'{inputs.input_ids.shape=}')
+                # print(f'{inputs.input_ids.shape=}')
 
                 # update generate kwargs
                 current_gen_kwargs = self.default_gen_kwargs.copy()
