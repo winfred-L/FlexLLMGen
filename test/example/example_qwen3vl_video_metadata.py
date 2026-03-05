@@ -29,13 +29,13 @@ messages = [
                 "type": "video",
                 "video": video_path,
                 # restrict the resolution of individual frames in the video
-                "min_pixels": 4 * 32 * 32,
-                "max_pixels": 56 * 32 * 32, #640 * 32 * 32, #256 * 32 * 32,
+                # "min_pixels": 4 * 32 * 32,
+                # "max_pixels": 640 * 32 * 32,
                 # limit the total number of tokens in the video
-                "total_pixels": 56 * 1024 * 32 * 32, #224 * 1024 * 32 * 32, # 224K tokens
+                "total_pixels": 32 * 1024 * 32 * 32,
                 # accept either `fps` or `nframes`
                 # "fps": 2.0,
-                "nframes": 2048,
+                "nframes": 32, #2048,
             },
             {"type": "text", "text": question},
         ],
@@ -70,6 +70,7 @@ inputs = processor(
     do_resize=False, # avoid duplicate resizing
     **video_kwargs
 )
+inputs = inputs.to(device)
 
 torch.cuda.synchronize()
 t2 = time.time()
@@ -88,15 +89,7 @@ print(f'{inputs.video_grid_thw=}')
 # import pdb; pdb.set_trace()
 
 
-inputs = inputs.to(device)
-# import pdb; pdb.set_trace()
 
-
-# model = Qwen3VLForConditionalGeneration.from_pretrained(
-#     model_path,
-#     dtype=torch.bfloat16,
-#     attn_implementation="flash_attention_2",
-# ).to(device).eval()
 
 model = AutoModelForImageTextToText.from_pretrained(
     model_path, dtype=torch.bfloat16, attn_implementation="flash_attention_2"
@@ -108,7 +101,7 @@ print(f"t3-t2={t3-t2}")
 
 # Inference: Generation of the output
 with torch.inference_mode():
-    generated_ids = model.generate(**inputs, max_new_tokens=64, do_sample=False)
+    generated_ids = model.generate(**inputs, max_new_tokens=64) #, do_sample=False
 
 torch.cuda.synchronize()
 t4 = time.time()

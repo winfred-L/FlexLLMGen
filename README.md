@@ -61,7 +61,7 @@ hf download OpenGVLab/MVBench --repo-type dataset
 hf download lmms-lab/LVBench --repo-type dataset
 
 modelscope download --dataset lmms-lab/Video-MME --local_dir /data1/lyc/datasets/Video-MME
-
+modelscope download --dataset AI-ModelScope/MLVU --local_dir /data1/lyc/datasets/MLVU --include 'MLVU/video/2_needle/*'
 ```
 
 

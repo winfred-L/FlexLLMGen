@@ -15,3 +15,4 @@ accelerate launch --num_processes 1 --main_process_port 12345 -m lmms_eval \
     --batch_size 1 \
     --log_samples \
     --output_path /data1/lyc/flexllmgen_outputs/lmm-lvbench-flexgen-qwen25vl-7b/
+    # --limit 100

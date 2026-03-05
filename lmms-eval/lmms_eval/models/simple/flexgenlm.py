@@ -265,7 +265,7 @@ class FlexGenLM(lmms):
                         **video_kwargs
                     )
 
-                # print(f'{inputs.input_ids.shape=}')
+                print(f'{inputs.input_ids.shape=}')
 
                 # update generate kwargs
                 current_gen_kwargs = self.default_gen_kwargs.copy()
@@ -281,10 +281,10 @@ class FlexGenLM(lmms):
                 
             
                 # # generate output
-                # print("Inputs:\n" + 70 * '-')
-                # print(f"video: {video_path}")
-                # print(f"question: {question}")
-                # print(70 * '-' + "\n")
+                print("Inputs:\n" + 70 * '-')
+                print(f"video: {video_path}")
+                print(f"question: {question}")
+                print(70 * '-' + "\n")
                 # import pdb; pdb.set_trace()
 
 
@@ -314,9 +314,9 @@ class FlexGenLM(lmms):
                 # t4 = time.time()
                 # print(f"t4-t3={t4-t3}")
 
-                # print("Output:\n" + 70 * '-')
-                # print(outputs[0])
-                # print(70 * '-' + "\n")
+                print("Output:\n" + 70 * '-')
+                print(outputs[0])
+                print(70 * '-' + "\n")
                 # import pdb; pdb.set_trace()
 
                 import gc
