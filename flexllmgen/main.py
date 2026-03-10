@@ -234,7 +234,7 @@ def add_parser_arguments(parser):
     
     # ===== 推理设置 =====
     parser.add_argument("--cuda-device", type=str, default='cuda:0')
-    parser.add_argument("--gen-len", type=int, default=50000) # 生成的最大新 Token 数量
+    parser.add_argument("--gen-len", type=int, default=128) # 生成的最大新 Token 数量
     parser.add_argument("--do-sample", type=bool, default=False)
     parser.add_argument("--temperature", type=float, default=0.000001)
     parser.add_argument("--debug-mode", type=str, default=None, choices=["fewer_batch", "breakdown"])
@@ -297,18 +297,18 @@ if __name__ == "__main__":
     # args.attn_impl = "eager"  # only for no sparse
 
     # only for generation_loop_overlap_single_batch()
-    args.do_sparse = True
+    # args.do_sparse = True
 
 
-    video_path = "./test/video/28s.mp4"
+    video_path = "/data1/lyc/datasets/MLVU/MLVU/video/9_summary/217.mp4" #"./test/video/28s.mp4"
     
     question = "Please describe this video in detail."
 
     # 重定向print()到log文件
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_file = f'./logs/{args.model_type}-{timestamp}.txt'
-    log_file = open(output_file, 'w', encoding='utf-8')
-    sys.stdout = log_file
+    # timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # output_file = f'./logs/{args.model_type}-{timestamp}.txt'
+    # log_file = open(output_file, 'w', encoding='utf-8')
+    # sys.stdout = log_file
     # sys.stderr = log_file
 
     # 打印参数设置

@@ -152,10 +152,9 @@ if hasattr(inputs, 'video_grid_thw'):
 
 
 model = AutoModelForImageTextToText.from_pretrained(
-    model_path,
-    dtype=torch.bfloat16,
-    attn_implementation="flash_attention_2",
-).to(device).eval()
+    model_path, dtype=torch.bfloat16, attn_implementation="flash_attention_2",
+    device_map=device, low_cpu_mem_usage=True, # accelerate model loading
+).eval()
 
 torch.cuda.synchronize()
 t3 = time.time()

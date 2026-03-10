@@ -1,12 +1,4 @@
-# Qwen3-VL introduces the new video processor with `video_metadata`
-# see https://github.com/QwenLM/Qwen3-VL?tab=readme-ov-file#new-qwen-vl-utils-usage
-
-
-from dotenv import load_dotenv
-load_dotenv(override=True)
-
 import time
-
 import torch
 from transformers import Qwen3VLForConditionalGeneration, AutoModelForImageTextToText, AutoProcessor
 from qwen_vl_utils import process_vision_info
@@ -18,9 +10,30 @@ processor = AutoProcessor.from_pretrained(model_path)
 
 
 # video_path = "./test/video/28s.mp4"
-video_path = "/data1/lyc/hf_home/lvbench/Cm73ma6Ibcs.mp4" # 1 hour
+# video_path = "/data1/lyc/hf_home/lvbench/Cm73ma6Ibcs.mp4" # 1 hour
+video_path = "/data1/lyc/datasets/MLVU/MLVU/video/9_summary/217.mp4" # 8 min
 question = 'Please describe this video in detail.'
 
+# messages = [
+#     {
+#         "role": "user",
+#         "content": [
+#             {
+#                 "type": "video",
+#                 "video": video_path,
+#                 # restrict the resolution of individual frames in the video
+#                 # "min_pixels": 4 * 32 * 32,
+#                 # "max_pixels": 640 * 32 * 32,
+#                 # limit the total number of tokens in the video
+#                 "total_pixels": 32 * 1024 * 32 * 32,
+#                 # accept either `fps` or `nframes`
+#                 # "fps": 2.0,
+#                 "nframes": 32, #2048,
+#             },
+#             {"type": "text", "text": question},
+#         ],
+#     }
+# ]
 messages = [
     {
         "role": "user",
@@ -28,14 +41,6 @@ messages = [
             {
                 "type": "video",
                 "video": video_path,
-                # restrict the resolution of individual frames in the video
-                # "min_pixels": 4 * 32 * 32,
-                # "max_pixels": 640 * 32 * 32,
-                # limit the total number of tokens in the video
-                "total_pixels": 128 * 1024 * 32 * 32,
-                # accept either `fps` or `nframes`
-                # "fps": 2.0,
-                # "nframes": 32, #2048,
             },
             {"type": "text", "text": question},
         ],
@@ -45,30 +50,39 @@ messages = [
 torch.cuda.synchronize()
 t0 = time.time()
 
-text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-images, videos, video_kwargs = process_vision_info(messages, image_patch_size=16, return_video_kwargs=True, return_video_metadata=True)
+# text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+# images, videos, video_kwargs = process_vision_info(messages, image_patch_size=16, return_video_kwargs=True, return_video_metadata=True)
 
-# each video returns as (video_tensor, video_metadata)
-# split the videos and according metadatas
-if videos is not None:
-    videos, video_metadatas = zip(*videos)
-    videos, video_metadatas = list(videos), list(video_metadatas)
-else:
-    video_metadatas = None
+# # each video returns as (video_tensor, video_metadata)
+# # split the videos and according metadatas
+# if videos is not None:
+#     videos, video_metadatas = zip(*videos)
+#     videos, video_metadatas = list(videos), list(video_metadatas)
+# else:
+#     video_metadatas = None
 
 torch.cuda.synchronize()
 t1 = time.time()
 print(f"t1-t0={t1-t0}")
 
 
-inputs = processor(
-    text=text,
-    images=images,
-    videos=videos,
-    video_metadata=video_metadatas,
-    return_tensors="pt",
-    do_resize=False, # avoid duplicate resizing
-    **video_kwargs
+# inputs = processor(
+#     text=text,
+#     images=images,
+#     videos=videos,
+#     video_metadata=video_metadatas,
+#     return_tensors="pt",
+#     do_resize=False, # avoid duplicate resizing
+#     **video_kwargs
+# )
+# inputs = inputs.to(device)
+
+inputs = processor.apply_chat_template(
+    messages,
+    tokenize=True,
+    add_generation_prompt=True,
+    return_dict=True,
+    return_tensors="pt"
 )
 inputs = inputs.to(device)
 
