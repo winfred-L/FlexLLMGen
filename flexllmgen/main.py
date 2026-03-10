@@ -1,5 +1,5 @@
-from dotenv import load_dotenv
-load_dotenv(override=True)
+# from dotenv import load_dotenv
+# load_dotenv(override=True)
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -129,7 +129,7 @@ def run_flexllmgen_qwen(args, video_path=None, question=None):
     # 3. 准备执行环境
     gpu = TorchDevice(args.cuda_device)
     cpu = TorchDevice("cpu")
-    disk = TorchDisk(os.getenv('OFFLOAD_DIR'))
+    disk = TorchDisk(args.offload_dir)
     env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
 
     # 3. 将命令行参数转换为 Policy 策略对象
