@@ -116,12 +116,12 @@ def draw_save_layer_head(
     # torch.save(matrix, f'{output_path}/{title}.pt')
 
 
-output_path = '/data1/lyc/flexllmgen_outputs/attn_weight/qwen3vl-8b_28s'
+output_path = '/data1/lyc/flexllmgen_outputs/attn_weight'
 
-sum_result_max, _ = torch.max(sum_result, dim=2)
-print(f'sum_result_max: {sum_result_max}')
-torch.save(sum_result_max, f'{output_path}/sum_result_max.pt')
-import pdb; pdb.set_trace()
+# sum_result_max, _ = torch.max(sum_result, dim=2)
+# print(f'sum_result_max: {sum_result_max}')
+# torch.save(sum_result_max, f'{output_path}/sum_result_max.pt')
+# import pdb; pdb.set_trace()
 # draw_save_layer_head(
 #     matrix = sum_result_max,
 #     title = 'sum_result_max',
