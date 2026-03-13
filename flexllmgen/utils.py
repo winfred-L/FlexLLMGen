@@ -530,7 +530,7 @@ class CaptureAttnWeight:
 
     def setup(self, model_type, video_id):
         save_dir = '/data1/lyc/flexllmgen_outputs/attn_weight'
-        self.save_path = f'{save_dir}/{model_type}_{video_id}.pt'
+        self.save_path = f'{save_dir}/{model_type}_{video_id}/{model_type}_{video_id}.pt'
 
     def add(self, attn_weight, layer, step):
         self.data[f'layer{layer}_step{step}'] = attn_weight
